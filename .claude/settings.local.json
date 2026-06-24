@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /home/maqbuul/Documents/African-pos/ && mkdir -p /home/maqbuul/Documents/African-pos/research)",
+      "WebSearch"
+    ],
+    "additionalDirectories": [
+      "/home/maqbuul/Documents/African-pos"
+    ]
+  }
+}
