@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
@@ -190,6 +190,39 @@ export class QrOrderService {
     }
     return this.paymentsService.takeMpesa(authContext, billId, {
       amount: 0, currency: 'KES', idempotencyKey, customerPhone,
+    })
+  }
+
+  async tableUtilizationReport(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [statusBreakdown, occupancyStats] = await Promise.all([
+        db
+          .select({
+            status: restaurantTables.status,
+            section: restaurantTables.section,
+            count: sql<number>`COUNT(*)`,
+            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
+            occupiedCapacity: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
+          })
+          .from(restaurantTables)
+          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
+          .groupBy(restaurantTables.status, restaurantTables.section)
+          .orderBy(restaurantTables.status, restaurantTables.section),
+        db
+          .select({
+            section: restaurantTables.section,
+            totalTables: sql<number>`COUNT(*)`,
+            occupiedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'occupied')`,
+            availableTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'available')`,
+            reservedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'reserved')`,
+            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
+            currentGuests: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
+          })
+          .from(restaurantTables)
+          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
+          .groupBy(restaurantTables.section),
+      ])
+      return { statusBreakdown, occupancyStats }
     })
   }
 }

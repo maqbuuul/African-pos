@@ -1,5 +1,8 @@
-import { Body, Controller, Get, HttpCode, Post, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, Inject, Post, Query, Req, UseGuards } from '@nestjs/common'
+import type { Request } from 'express'
 
+import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
+import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { TableSession, TableSessionGuard } from './table-session.guard.js'
 import { QrOrderService, type OrderItemInput } from './qr-order.service.js'
 import type { TableSessionClaims } from './table-session.js'
@@ -62,5 +65,14 @@ export class QrOrderController {
     @Body('idempotencyKey') idempotencyKey: string,
   ) {
     return this.qrOrderService.payMpesa(session, orderId, phone, idempotencyKey)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports (staff-facing, not public)
+  // ---------------------------------------------------------------------------
+  @Get('api/v1/tables/reports/utilization')
+  @UseGuards(JwtAuthGuard)
+  tableUtilization(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.qrOrderService.tableUtilizationReport(req.authContext!, locationId)
   }
 }
