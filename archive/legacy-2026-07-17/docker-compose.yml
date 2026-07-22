@@ -1,0 +1,158 @@
+services:
+  # ─── INFRASTRUCTURE ──────────────────────────────────────────────────────────
+
+  db:
+    image: postgres:16-alpine
+    container_name: pos_db
+    environment:
+      POSTGRES_DB: african_pos_dev
+      POSTGRES_USER: pos_user
+      POSTGRES_PASSWORD: pos_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pos_user -d african_pos_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: pos_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
+    container_name: pos_search
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: dev_master_key_change_in_prod
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── APPLICATION SERVICES ────────────────────────────────────────────────────
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    container_name: pos_api
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://pos_user:pos_password@db:5432/african_pos_dev
+      REDIS_URL: redis://redis:6379
+      MEILISEARCH_URL: http://meilisearch:7700
+      MEILISEARCH_MASTER_KEY: dev_master_key_change_in_prod
+      JWT_ACCESS_SECRET: dev_access_secret_at_least_32_chars_long
+      JWT_REFRESH_SECRET: dev_refresh_secret_at_least_32_chars_long
+      ML_SERVICE_URL: http://ml:8000
+      ML_SERVICE_SECRET: internal_ml_secret
+      PORT: 3000
+      LOG_LEVEL: info
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./packages:/app/packages
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+      target: dev
+    container_name: pos_worker
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://pos_user:pos_password@db:5432/african_pos_dev
+      REDIS_URL: redis://redis:6379
+      ML_SERVICE_URL: http://ml:8000
+      ML_SERVICE_SECRET: internal_ml_secret
+      LOG_LEVEL: info
+    volumes:
+      - ./apps/worker/src:/app/apps/worker/src
+      - ./packages:/app/packages
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ml:
+    build:
+      context: apps/ml
+      dockerfile: Dockerfile
+    container_name: pos_ml
+    environment:
+      DATABASE_URL: postgresql://pos_user:pos_password@db:5432/african_pos_dev
+      REDIS_URL: redis://redis:6379
+      ML_SERVICE_SECRET: internal_ml_secret
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/ml:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── PRODUCT ANALYTICS ───────────────────────────────────────────────────────
+  # PostHog: use Cloud (posthog.com) in dev — free up to 1M events/month.
+  # Self-host in production when merchant count makes cloud tier expensive.
+  # To run self-hosted locally: uncomment the service below and run
+  #   docker compose --profile analytics up
+  #
+  # posthog:
+  #   image: posthog/posthog:latest
+  #   profiles: [analytics]
+  #   environment:
+  #     SECRET_KEY: dev_posthog_secret_change_in_prod
+  #     DATABASE_URL: postgresql://pos_user:pos_password@db:5432/posthog
+  #     REDIS_URL: redis://redis:6379
+  #   ports:
+  #     - "8080:8000"
+  #   depends_on:
+  #     - db
+  #     - redis
+
+volumes:
+  postgres_data:
+  redis_data:
+  meilisearch_data:
+
+# ─── NOTES ───────────────────────────────────────────────────────────────────
+# React Native POS app (apps/pos): runs on Android device/emulator, not Docker.
+# Manager portal (apps/manager): pnpm dev → http://localhost:5173
+# Owner dashboard (apps/dashboard): pnpm dev → http://localhost:5174
+# PostHog analytics: use posthog.com Cloud (free) in dev. Self-host for prod.

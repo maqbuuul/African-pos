@@ -1,0 +1,32 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.5
+pydantic-settings==2.7.1
+redis==5.2.1
+
+# Model 1: Demand forecasting
+prophet==1.1.6
+
+# Model 2 + 5: Menu engineering + Churn prediction
+lightgbm==4.5.0
+scikit-learn==1.6.1
+
+# Model 3: Anomaly detection (Isolation Forest — part of scikit-learn above)
+
+# Model 4: Product recommendations (co-occurrence matrix — just numpy/scipy)
+scipy==1.15.0
+
+# Model 6: Customer Lifetime Value
+lifetimes==0.11.3
+
+# Model 7: WhatsApp NLP fast-path
+sentence-transformers==3.3.1
+rapidfuzz==3.11.0
+
+# Data
+pandas==2.2.3
+numpy==1.26.4
+
+# Utilities
+httpx==0.28.1
+python-dotenv==1.0.1
