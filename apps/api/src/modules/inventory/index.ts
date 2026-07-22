@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common'
 
 import { AuditModule } from '../../core/audit/audit.module.js'
+import { InventoryController } from './inventory.controller.js'
+import { InventoryService } from './inventory.service.js'
 
 export const inventoryModule = {
   name: 'inventory',
@@ -24,8 +26,8 @@ export const inventoryModule = {
 
 @Module({
   imports: [AuditModule],
-  controllers: [],
-  providers: [],
+  controllers: [InventoryController],
+  providers: [InventoryService],
   exports: [],
 })
 export class InventoryModule {}
