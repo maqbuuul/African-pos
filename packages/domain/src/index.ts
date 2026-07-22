@@ -20,6 +20,10 @@ export const StaffRoleSchema = z.enum([
 ])
 export type StaffRole = z.infer<typeof StaffRoleSchema>
 
+// P7 — Payments Core. method = what type of payment from the customer's
+// perspective; provider = which integration/system processed it.
+// Kept separate so a card payment via Paystack and a card payment via a
+// physical terminal share method='card' but differ on provider.
 export const PaymentMethodSchema = z.enum([
   'cash',
   'mpesa',
@@ -28,14 +32,147 @@ export const PaymentMethodSchema = z.enum([
   'edahab',
   'zaad',
   'card',
-  'stripe',
-  'flutterwave',
-  'paystack',
-  'loyalty',
+  'bank_transfer',
+  'card_terminal',
+  'loyalty_points',
   'gift_card',
   'customer_credit',
+  'external_platform',
 ])
 export type PaymentMethod = z.infer<typeof PaymentMethodSchema>
+
+export const PaymentProviderSchema = z.enum([
+  'none',          // cash, card_terminal, manual_bank_transfer — no external system
+  'mpesa_daraja',  // Safaricom Daraja API (STK push, direct per-tenant)
+  'paystack',      // Paystack (card, bank transfer/Pesalink, mobile money)
+  'airtel_money_api',
+  'stripe',
+  'flutterwave',
+  'manual',        // recorded after the fact, reference number only
+  'uber_eats',
+  'glovo',
+  'bolt_food',
+])
+export type PaymentProvider = z.infer<typeof PaymentProviderSchema>
+
+// Payment intent lifecycle: pending (created) → processing (STK push sent) →
+// confirmed (provider webhook) | failed | expired (M-Pesa timeout).
+// cancelled is set by the cashier or system aborting before confirmation.
+export const PaymentIntentStatusSchema = z.enum([
+  'pending',
+  'processing',
+  'confirmed',
+  'failed',
+  'cancelled',
+  'expired',
+])
+export type PaymentIntentStatus = z.infer<typeof PaymentIntentStatusSchema>
+
+export const PAYMENT_INTENT_STATUS_TRANSITIONS: Readonly<Record<PaymentIntentStatus, readonly PaymentIntentStatus[]>> = {
+  pending:    ['processing', 'confirmed', 'failed', 'cancelled', 'expired'],
+  processing: ['confirmed', 'failed', 'expired', 'cancelled'],
+  confirmed:  [],
+  failed:     ['pending'], // cashier can retry with a fresh intent; service creates a new row
+  cancelled:  [],
+  expired:    [],
+}
+
+// Confirmed payment lifecycle. A payment row is only created once a provider
+// confirms (or cash is taken). Never deleted — refunds create new rows.
+export const PaymentStatusSchema = z.enum(['confirmed', 'partially_refunded', 'refunded'])
+export type PaymentStatus = z.infer<typeof PaymentStatusSchema>
+
+export const RefundStatusSchema = z.enum([
+  'pending',
+  'confirmed',
+  'failed',
+  'requires_manual_settlement', // provider reversal failed/expired, manual action needed
+])
+export type RefundStatus = z.infer<typeof RefundStatusSchema>
+
+// Integration connection categories — matches packages/integrations categories.
+export const IntegrationCategorySchema = z.enum([
+  'payments',
+  'messaging',
+  'accounting',
+  'delivery',
+  'hospitality_channels',
+  'commerce',
+  'tax',
+  'hardware',
+])
+export type IntegrationCategory = z.infer<typeof IntegrationCategorySchema>
+
+export const IntegrationConnectionStatusSchema = z.enum(['active', 'inactive', 'error'])
+export type IntegrationConnectionStatus = z.infer<typeof IntegrationConnectionStatusSchema>
+
+// P8 — Shift + Cash Drawer (docs/prd/08-shift-cash-drawer.md, BUILD_WORKFLOW.md P8).
+
+// Shift lifecycle per BUILD_WORKFLOW.md P8: draft → open → closing → closed → reconciled.
+// `closing` is a brief transition state while the manager confirms variance/reason;
+// once confirmed the shift moves to `closed` immediately (no async step).
+// `reconciled` is set later by an accountant/owner after matching against actual
+// provider settlements — it's a post-close endorsement, not a workflow gate.
+export const ShiftStatusSchema = z.enum(['draft', 'open', 'closing', 'closed', 'reconciled'])
+export type ShiftStatus = z.infer<typeof ShiftStatusSchema>
+
+export const SHIFT_STATUS_TRANSITIONS: Readonly<Record<ShiftStatus, readonly ShiftStatus[]>> = {
+  draft:       ['open'],
+  open:        ['closing'],
+  closing:     ['closed', 'open'],  // 'open' to revert if variance check fails
+  closed:      ['reconciled', 'open'],  // 'open' for manager reopen (rare, audited)
+  reconciled:  [],
+}
+
+export const CashDrawerSessionStatusSchema = z.enum(['open', 'counted', 'closed'])
+export type CashDrawerSessionStatus = z.infer<typeof CashDrawerSessionStatusSchema>
+
+// Direction of a mid-shift drawer adjustment (petty cash out, change float in, etc.)
+export const CashAdjustmentDirectionSchema = z.enum(['in', 'out'])
+export type CashAdjustmentDirection = z.infer<typeof CashAdjustmentDirectionSchema>
+
+// KES denomination list (notes + coins) — used by the denomination calculator
+// and the shift-close counting screen. Ordered largest to smallest for greedy
+// change-calculation. Other currencies will be added as the product expands
+// (Module 18: denomination-aware cash handling is a first-class feature, not an
+// afterthought — the calculator must work in actual local denominations).
+export const KES_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1] as const
+export type KesDenomination = (typeof KES_DENOMINATIONS)[number]
+
+// Map of currency code → denominations, ordered largest to smallest.
+// Extend as new currencies are onboarded.
+export const CURRENCY_DENOMINATIONS: Readonly<Record<string, readonly number[]>> = {
+  KES: KES_DENOMINATIONS,
+  // Placeholder shape — add as the product expands:
+  // NGN: [1000, 500, 200, 100, 50, 20, 10, 5, 1],
+  // GHS: [200, 100, 50, 20, 10, 5, 2, 1],
+  // UGX: [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50],
+}
+
+// Computes the optimal denomination breakdown to make a given change amount.
+// Returns a map of denomination → count, plus any unhandled remainder (should
+// be 0 for a clean amount; non-zero means the denominations list doesn't cover
+// the amount exactly, which is a data problem, not a rounding one).
+// Pure function — no side effects, safe to call server-side or on-device.
+export const computeChangeDenominations = (
+  changeAmount: number,  // integer, smallest currency unit
+  currency: string,
+): { breakdown: Record<number, number>; remainder: number } => {
+  const denominations = CURRENCY_DENOMINATIONS[currency]
+  if (!denominations) {
+    return { breakdown: {}, remainder: changeAmount }
+  }
+  const breakdown: Record<number, number> = {}
+  let remaining = changeAmount
+  for (const denom of denominations) {
+    if (remaining >= denom) {
+      const count = Math.floor(remaining / denom)
+      breakdown[denom] = count
+      remaining -= count * denom
+    }
+  }
+  return { breakdown, remainder: remaining }
+}
 
 export const OrderStatusSchema = z.enum([
   'draft',
@@ -186,8 +323,8 @@ export const ORDER_STATUS_TRANSITIONS: Readonly<Record<OrderStatus, readonly Ord
   draft: ['open', 'voided'],
   open: ['sent_to_kitchen', 'voided'],
   sent_to_kitchen: ['partially_ready', 'ready', 'served', 'bill_requested', 'voided'],
-  partially_ready: ['ready', 'served', 'bill_requested', 'voided'],
-  ready: ['served', 'bill_requested', 'voided'],
+  partially_ready: ['sent_to_kitchen', 'ready', 'served', 'bill_requested', 'voided'],
+  ready: ['sent_to_kitchen', 'partially_ready', 'served', 'bill_requested', 'voided'],
   served: ['bill_requested', 'voided'],
   bill_requested: ['payment_pending', 'served', 'voided'],
   payment_pending: ['paid', 'bill_requested', 'voided'],
@@ -217,20 +354,17 @@ export const OrderItemStatusSchema = z.enum([
 ])
 export type OrderItemStatus = z.infer<typeof OrderItemStatusSchema>
 
-// `void_requested` is a real, legal state (reachable from anything not yet
-// voided/comped) but OrdersService never persists it in this phase — a
-// pending void/comp lives only in approval_requests, exactly like
-// ProductsService.changePrice never parks a product in a "pending price"
-// state while its approval is outstanding. The item jumps straight from its
-// current status to `voided`/`comped` once approved. `void_requested` stays
-// defined for BUILD_WORKFLOW.md P6, which needs a persisted "kitchen must
-// acknowledge this void" state once a real KDS exists to acknowledge it.
+// `void_requested` became a persisted state in P6 once the KDS exists to
+// acknowledge it. Pre-send voids still jump straight to `voided`; post-send
+// voids can now pause in `void_requested` until the kitchen explicitly
+// acknowledges them, matching PRD 05/06's “don't silently vanish a live
+// kitchen item” rule.
 export const ORDER_ITEM_STATUS_TRANSITIONS: Readonly<Record<OrderItemStatus, readonly OrderItemStatus[]>> = {
   draft: ['sent', 'voided', 'comped'],
-  sent: ['accepted', 'in_progress', 'ready', 'served', 'voided', 'comped'],
-  accepted: ['in_progress', 'ready', 'served', 'voided', 'comped'],
-  in_progress: ['ready', 'served', 'voided', 'comped'],
-  ready: ['served', 'voided', 'comped'],
+  sent: ['accepted', 'in_progress', 'ready', 'served', 'void_requested', 'voided', 'comped'],
+  accepted: ['in_progress', 'ready', 'served', 'void_requested', 'voided', 'comped'],
+  in_progress: ['ready', 'served', 'void_requested', 'voided', 'comped'],
+  ready: ['in_progress', 'served', 'void_requested', 'voided', 'comped'],
   served: ['voided', 'comped'],
   void_requested: ['voided'],
   voided: [],
@@ -244,6 +378,33 @@ export const ORDER_ITEM_STATUS_TRANSITIONS: Readonly<Record<OrderItemStatus, rea
 // list itself, but the boundary is defined once here so it can't drift
 // between the void and comp code paths.
 export const ORDER_ITEM_PRE_SEND_STATUSES: ReadonlySet<OrderItemStatus> = new Set(['draft'])
+
+// P6 — Kitchen / KDS (docs/prd/06-kitchen-kds.md, BUILD_WORKFLOW.md P6).
+// Ticket items are station-local workflow state, distinct from order-item
+// state: `queued` means the order item has been fired and routed to a station,
+// but that station hasn't accepted work yet. Recall is handled by a bounded
+// transition from `ready` back to `in_progress`, not a separate status.
+export const KdsTicketStatusSchema = z.enum(['open', 'partially_ready', 'ready', 'voided'])
+export type KdsTicketStatus = z.infer<typeof KdsTicketStatusSchema>
+
+export const KdsTicketItemStatusSchema = z.enum(['queued', 'accepted', 'in_progress', 'ready', 'void_requested', 'voided'])
+export type KdsTicketItemStatus = z.infer<typeof KdsTicketItemStatusSchema>
+
+export const KDS_TICKET_ITEM_STATUS_TRANSITIONS: Readonly<Record<KdsTicketItemStatus, readonly KdsTicketItemStatus[]>> = {
+  queued: ['accepted', 'in_progress', 'ready', 'void_requested', 'voided'],
+  accepted: ['in_progress', 'ready', 'void_requested', 'voided'],
+  in_progress: ['ready', 'void_requested', 'voided'],
+  ready: ['in_progress', 'void_requested'],
+  void_requested: ['voided'],
+  voided: [],
+}
+
+export const KDS_TICKET_STATUS_TRANSITIONS: Readonly<Record<KdsTicketStatus, readonly KdsTicketStatus[]>> = {
+  open: ['partially_ready', 'ready', 'voided'],
+  partially_ready: ['ready', 'voided'],
+  ready: [],
+  voided: [],
+}
 
 export const BillStatusSchema = z.enum(['open', 'payment_pending', 'paid', 'partially_refunded', 'refunded', 'voided'])
 export type BillStatus = z.infer<typeof BillStatusSchema>

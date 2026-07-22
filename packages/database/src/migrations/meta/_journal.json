@@ -43,6 +43,27 @@
       "when": 1784571094811,
       "tag": "0005_p5_order_engine_core",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784741409655,
+      "tag": "0006_p6_kitchen_kds",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784900000000,
+      "tag": "0007_p7_payments_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785000000000,
+      "tag": "0008_p8_shift_cash_drawer",
+      "breakpoints": true
     }
   ]
 }

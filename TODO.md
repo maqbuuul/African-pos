@@ -264,9 +264,22 @@ sync engine all changed from what earlier scaffolding may assume.
       `billId` correctly 400s. Kitchen ticket routing/acknowledgment,
       "served" order-level aggregation across all items, and payment capture
       are explicitly out of scope here — P6/P7's jobs, next.
-- [ ] Kitchen tickets
-- [ ] Cash payments
-- [ ] M-Pesa payment intent flow
+- [x] Kitchen tickets — done 2026-07-22 (BUILD_WORKFLOW.md P6): `apps/api/src/modules/restaurant/kds.service.ts` + `kds.controller.ts`, `packages/database/src/migrations/0006_p6_kitchen_kds.sql`, `apps/kds-web/src/app/main.tsx`. Added `kds_stations` / `kitchen_tickets` / `kitchen_ticket_items` schema + RLS + seed data; order fire now creates station-routed tickets from the existing P3 category/product station mapping; expo combines one order across multiple stations; queue responses expose batched identical items for one-pass cooking and visible `attentionFlags` for allergy notes; ticket-item accept/start/bump/recall and whole-ticket `bump-all` sync parent `order_items` and aggregate order readiness (`sent_to_kitchen` → `partially_ready` / `ready`) back into P5; post-send voids now pause in `void_requested` until kitchen acknowledgement (`POST /api/v1/kds/tickets/:ticketItemId/acknowledge-void`) instead of silently disappearing. Printable fallback path: `GET /api/v1/kds/stations/:stationId/printable-tickets` emits a legible plain-text ticket block from the same routing data rather than duplicating printer logic. `apps/kds-web` now has a real owner-login-based KDS surface (station queue, expo, analytics, batching, allergy badges, print view, item actions, token persistence). Verified live against the real stack: one order with two products routed to `hot_kitchen` and `cold_station` produced two station tickets plus one combined expo entry; bumping both tickets drove both parent order items and the order itself to `ready`; recall downgraded a ready item back to `in_progress` / order back to `sent_to_kitchen`; printable fallback returned the expected text block for the cold-station ticket; repeated identical items appear consolidated in the `batches` payload.
+- [x] Cash payments — done 2026-07-22 (BUILD_WORKFLOW.md P7): `apps/api/src/modules/payments/`,
+      `packages/integrations/src/payments/`, `packages/database/src/migrations/0007_p7_payments_core.sql`.
+      Full P7 Payments Core: `integration_connections` (encrypted per-tenant credentials, AES-256-GCM
+      via `packages/database/src/security/encrypt.ts`), `payment_intents`, `payments`, `refunds`, `tips`
+      schema + RLS; `IdempotencyService` (unique key per org enforced at DB level); `CashAdapter`
+      (immediate offline confirm, change calculation), `MpesaAdapter` (Daraja STK push, org-scoped
+      shortcode/till, 5-min TTL, Module 18 fraud check on webhook confirmation),
+      `PaystackAdapter` (card + Pesalink bank transfer, HMAC-SHA512 webhook signature verification),
+      `ManualAdapter` (card terminal slip + manual bank transfer, manager-gated); split-payment support
+      (multiple payments per bill, bill auto-paid when confirmed sum >= total, order auto-closed when
+      all bills paid — completing P5's explicit handoff gap); refunds (approval-gated per P2 flow,
+      never modifies original payment row); tips (linked payment + staff, not merged into bill total);
+      9 new permissions seeded across all roles. Verified: 23/23 monorepo typechecks pass, migration
+      applied with all 5 tables + RLS confirmed live, API boots with all 12 P7 routes mapped.
+- [x] M-Pesa payment intent flow — done 2026-07-22, see above (P7 work item).
 - [ ] KRA eTIMS receipt compliance (launch-blocking for Kenya — see
       BUILD_WORKFLOW.md P9 and master plan Module 18)
 - [ ] Receipts
