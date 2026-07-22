@@ -222,3 +222,105 @@ export const productModifierGroups = pgTable('product_modifier_groups', {
   unique('product_modifier_groups_product_id_modifier_group_id_key').on(table.productId, table.modifierGroupId),
 ])
 
+// ---------------------------------------------------------------------------
+// P4 — Floor Plan + Tables (docs/prd/04-floor-plan-tables.md, BUILD_WORKFLOW.md
+// P4). Same RLS-is-hand-written reasoning as the P3 block above.
+// ---------------------------------------------------------------------------
+
+export const floorPlans = pgTable('floor_plans', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('floor_plans_organization_id_idx').on(table.organizationId),
+  index('floor_plans_location_id_idx').on(table.locationId),
+  check('floor_plans_status_check', enumCheck(table.status, EntityStatusSchema.options)),
+])
+
+// Physical or temporary table (DATA_MODEL.md). `orderId` is a forward
+// reference to P5's not-yet-existing `orders` table — same no-FK-yet pattern
+// as products.taxCategoryId — populated once the order engine ships;
+// PRD 04 explicitly scopes this module to owning the table entity and its
+// own state machine, not order content.
+export const restaurantTables = pgTable('restaurant_tables', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  floorPlanId: uuid('floor_plan_id')
+    .notNull()
+    .references(() => floorPlans.id, { onDelete: 'restrict' }),
+  label: text('label').notNull(),
+  // Waiter section (PRD 04: "waiter's section by default, manager sees the
+  // whole floor"; permissions table's "own section" scoping for merge/split/
+  // transfer). Free text, not an FK — sections are a per-tenant floor
+  // grouping, not a managed entity of their own at this phase.
+  section: text('section'),
+  capacity: integer('capacity').notNull().default(4),
+  shape: text('shape').notNull().default('square'),
+  // Floor-plan-editor drag-and-drop coordinates (PRD 04 "Floor plan editor").
+  positionX: integer('position_x').notNull().default(0),
+  positionY: integer('position_y').notNull().default(0),
+  status: text('status').notNull().default('available'),
+  // Set when seated, cleared on release back to available/cleaning. Soft
+  // limit only (PRD 04 Business Rules: "warns, doesn't hard-block" — African
+  // hospitality routinely seats above nominal capacity for family dining).
+  partySize: integer('party_size'),
+  assignedStaffId: uuid('assigned_staff_id').references(() => staff.id, { onDelete: 'set null' }),
+  orderId: uuid('order_id'),
+  ...timestamps,
+}, (table) => [
+  index('restaurant_tables_organization_id_idx').on(table.organizationId),
+  index('restaurant_tables_location_id_idx').on(table.locationId),
+  index('restaurant_tables_floor_plan_id_idx').on(table.floorPlanId),
+  index('restaurant_tables_status_idx').on(table.status),
+  index('restaurant_tables_assigned_staff_id_idx').on(table.assignedStaffId),
+  uniqueIndex('restaurant_tables_location_id_label_key').on(table.locationId, table.label),
+  check('restaurant_tables_capacity_check', sql`${table.capacity} > 0`),
+  check('restaurant_tables_status_check', enumCheck(table.status, TableStatusSchema.options)),
+  check('restaurant_tables_shape_check', enumCheck(table.shape, TableShapeSchema.options)),
+])
+
+// Tracks tables merged into one logical order session (PRD 04). An active
+// merge is a row with `unmergedAt IS NULL`; the partial unique index below
+// stops the same table being merged into two primaries at once. `mergedBy`/
+// `unmergedByActorId` have no FK — dual-target (users vs. staff) pattern,
+// same as audit_logs.actor_id and approval_requests' *_actor_id (P3 fixed a
+// real bug from getting this wrong with a staff-only FK).
+export const tableMerges = pgTable('table_merges', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  primaryTableId: uuid('primary_table_id')
+    .notNull()
+    .references(() => restaurantTables.id, { onDelete: 'restrict' }),
+  mergedTableId: uuid('merged_table_id')
+    .notNull()
+    .references(() => restaurantTables.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id'),
+  mergedByActorId: uuid('merged_by_actor_id').notNull(),
+  mergedAt: timestamp('merged_at', { withTimezone: true }).notNull().defaultNow(),
+  unmergedByActorId: uuid('unmerged_by_actor_id'),
+  unmergedAt: timestamp('unmerged_at', { withTimezone: true }),
+}, (table) => [
+  index('table_merges_organization_id_idx').on(table.organizationId),
+  index('table_merges_primary_table_id_idx').on(table.primaryTableId),
+  index('table_merges_merged_table_id_idx').on(table.mergedTableId),
+  uniqueIndex('table_merges_active_merged_table_key').on(table.mergedTableId).where(sql`${table.unmergedAt} is null`),
+  check('table_merges_distinct_tables_check', sql`${table.primaryTableId} <> ${table.mergedTableId}`),
+])
+
