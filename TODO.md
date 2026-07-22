@@ -306,7 +306,10 @@ sync engine all changed from what earlier scaffolding may assume.
 - [ ] Purchase orders
 - [ ] Recipes
 - [ ] Wastage
-- [ ] Staff attendance
+- [x] Staff attendance — done 2026-07-23 (P12): `staff_attendance` table with
+      clock-in/out, break tracking, RLS; `AttendanceService` + `AttendanceController`
+      wired into StaffModule; permissions `attendance:clock_inout` (all staff roles)
+      and `attendance:manage` (supervisor+)
 - [ ] Customer profiles
 - [ ] Loyalty basics
 - [ ] WhatsApp receipts

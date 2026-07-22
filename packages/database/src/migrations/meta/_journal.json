@@ -71,6 +71,20 @@
       "when": 1785100000000,
       "tag": "0009_p9_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785200000000,
+      "tag": "0010_p12_staff_attendance",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784759880759,
+      "tag": "0011_early_pandemic",
+      "breakpoints": true
     }
   ]
 }
