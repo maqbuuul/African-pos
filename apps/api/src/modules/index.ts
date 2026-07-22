@@ -10,6 +10,7 @@ import { organizationModule, OrganizationModule } from './organization/index.js'
 import { ordersModule, OrdersModule } from './orders/index.js'
 import { paymentsModule, PaymentsModule } from './payments/index.js'
 import { productsModule, ProductsModule } from './products/index.js'
+import { qrOrderModule, QrOrderModule } from './qr-order/qr-order.module.js'
 import { reportsModule, ReportsModule } from './reports/index.js'
 import { restaurantModule, RestaurantModule } from './restaurant/index.js'
 import { retailModule, RetailModule } from './retail/index.js'
@@ -27,6 +28,7 @@ const plannedModules = [
   ordersModule,
   paymentsModule,
   productsModule,
+  qrOrderModule,
   reportsModule,
   restaurantModule,
   retailModule,
@@ -57,6 +59,7 @@ class ModulesController {
     OrdersModule,
     PaymentsModule,
     ProductsModule,
+    QrOrderModule,
     ReportsModule,
     RestaurantModule,
     RetailModule,

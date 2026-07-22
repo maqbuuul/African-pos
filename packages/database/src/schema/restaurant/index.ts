@@ -282,6 +282,9 @@ export const restaurantTables = pgTable('restaurant_tables', {
   section: text('section'),
   capacity: integer('capacity').notNull().default(4),
   shape: text('shape').notNull().default('square'),
+  // Stable QR slug: printed once on the table, never changes (P10 — QR ordering).
+  // Unique per location so the full URL is <tenant-domain>/t/<qr_slug>.
+  qrSlug: text('qr_slug'),
   // Floor-plan-editor drag-and-drop coordinates (PRD 04 "Floor plan editor").
   positionX: integer('position_x').notNull().default(0),
   positionY: integer('position_y').notNull().default(0),
@@ -300,6 +303,7 @@ export const restaurantTables = pgTable('restaurant_tables', {
   index('restaurant_tables_status_idx').on(table.status),
   index('restaurant_tables_assigned_staff_id_idx').on(table.assignedStaffId),
   uniqueIndex('restaurant_tables_location_id_label_key').on(table.locationId, table.label),
+  uniqueIndex('restaurant_tables_location_id_qr_slug_key').on(table.locationId, table.qrSlug),
   check('restaurant_tables_capacity_check', sql`${table.capacity} > 0`),
   check('restaurant_tables_status_check', enumCheck(table.status, TableStatusSchema.options)),
   check('restaurant_tables_shape_check', enumCheck(table.shape, TableShapeSchema.options)),

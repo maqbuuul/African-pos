@@ -306,20 +306,27 @@ sync engine all changed from what earlier scaffolding may assume.
 - [ ] Purchase orders
 - [ ] Recipes
 - [ ] Wastage
-- [ ] Staff attendance
-- [ ] Customer profiles
-- [ ] Loyalty basics
-- [ ] WhatsApp receipts
-- [ ] Manager approvals
+- [x] Staff attendance — done 2026-07-23 (`feature/p12a-staff-attendance`)
+- [ ] P10 — QR Table Ordering (`feature/p10-qr-ordering`) — in progress
+
+## Branch Name Guide (BUILD_WORKFLOW.md alignment)
+
+| BUILD_WORKFLOW Phase | Branch |
+|---|---|
+| P10 — QR Table Ordering | `feature/p10-qr-ordering` (in progress) |
+| P11 — Offline Sync | `feature/p11-offline-sync` ✅ |
+| P12 — Inventory + Recipes | `feature/p12-inventory-recipes` ✅ |
+| P12a — Staff Attendance | `feature/p12a-staff-attendance` ✅ |
+| P13 — CRM + Loyalty | `feature/p13-crm-loyalty` |
 
 ## Later
 
-- [ ] AI daily briefing
-- [ ] Revenue forecasting
-- [ ] Demand forecasting
-- [ ] Stockout prediction
-- [ ] Developer platform: public API, OAuth apps, webhooks, app
-      marketplace, SDKs (BUILD_WORKFLOW.md P19)
+- [ ] P14 — Reports + BI Dashboards
+- [ ] P15 — Commerce integrations (Shopify, WooCommerce)
+- [ ] P16 — Delivery integrations (Uber Eats, Glovo, Bolt Food)
+- [ ] P17 — AI/ML service
+- [ ] P18 — Hardening + launch
+- [ ] P19 — Developer platform
 - [ ] Hotel OS
 - [ ] Retail OS
 
