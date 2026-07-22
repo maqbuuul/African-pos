@@ -32,6 +32,7 @@ import { PermissionsService } from '../../core/permissions/permissions.service.j
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import { TenantSettingsService } from '../../core/tenant/tenant-settings.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { KdsService } from '../restaurant/kds.service.js'
 import type { AddOrderItemDto } from './dto/add-order-item.dto.js'
 import type { ApplyDiscountDto } from './dto/apply-discount.dto.js'
 import type { CreateOrderDto } from './dto/create-order.dto.js'
@@ -78,6 +79,7 @@ export class OrdersService {
     @Inject(ApprovalsService) private readonly approvalsService: ApprovalsService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(TenantSettingsService) private readonly tenantSettings: TenantSettingsService,
+    @Inject(KdsService) private readonly kdsService: KdsService,
   ) {}
 
   async list(authContext: AuthContext, query: ListOrdersQuery) {
@@ -355,6 +357,8 @@ export class OrdersService {
           await db.update(restaurantTables).set({ status: 'ordered' }).where(eq(restaurantTables.id, order.tableId))
         }
       }
+
+      await this.kdsService.createTicketsForSentItems(db, authContext, updatedOrder, toFire)
 
       return { order: updatedOrder, firedItemIds: toFire.map((item) => item.id) }
     })
@@ -744,7 +748,12 @@ export class OrdersService {
       locationId: result.locationId,
       actorType: authContext.actorType,
       actorId: authContext.actorId,
-      action: targetStatus === 'voided' ? 'order_item.voided' : 'order_item.comped',
+      action:
+        targetStatus === 'voided'
+          ? result.status === 'void_requested'
+            ? 'order_item.void_requested'
+            : 'order_item.voided'
+          : 'order_item.comped',
       entityType: 'order_item',
       entityId: result.id,
       reason,
@@ -770,13 +779,30 @@ export class OrdersService {
     if (!granted.includes('orders:void_item')) {
       throw new ForbiddenException({ code: 'permission_denied', message: 'missing permission: orders:void_item' })
     }
-    this.assertLegalItemTransition(item.status as OrderItemStatus, 'voided')
+
+    if (item.status === 'void_requested') {
+      throw new BadRequestException({
+        code: 'kitchen_void_pending',
+        message: 'this item is already awaiting kitchen acknowledgment before it can be voided',
+      })
+    }
 
     if (ORDER_ITEM_PRE_SEND_STATUSES.has(item.status as OrderItemStatus)) {
+      this.assertLegalItemTransition(item.status as OrderItemStatus, 'voided')
       return this.finalizeItemStatus(db, authContext, item, 'voided', reason)
     }
-    if (granted.includes(MANAGER_TIER_VOID_PERMISSION)) {
+
+    const requiresKitchenAck = ['sent', 'accepted', 'in_progress', 'ready'].includes(item.status)
+    const finalizeApprovedVoid = async () => {
+      if (requiresKitchenAck) {
+        return this.kdsService.requestVoidForOrderItem(db, authContext, item, reason)
+      }
+      this.assertLegalItemTransition(item.status as OrderItemStatus, 'voided')
       return this.finalizeItemStatus(db, authContext, item, 'voided', reason)
+    }
+
+    if (granted.includes(MANAGER_TIER_VOID_PERMISSION)) {
+      return finalizeApprovedVoid()
     }
 
     if (approvalRequestId) {
@@ -786,7 +812,7 @@ export class OrdersService {
         requestedByActorId: authContext.actorId,
         action: VOID_AFTER_SEND_ACTION,
       })
-      if (consumed) return this.finalizeItemStatus(db, authContext, item, 'voided', reason)
+      if (consumed) return finalizeApprovedVoid()
     }
 
     const approval = await this.approvalsService.create(db, {

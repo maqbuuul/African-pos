@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm'
 import { check, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
-import { ActorTypeSchema, EntityStatusSchema, PersonStatusSchema, VerticalSchema } from '@hospitality-os/domain'
+import { ActorTypeSchema, EntityStatusSchema, IntegrationCategorySchema, IntegrationConnectionStatusSchema, PersonStatusSchema, VerticalSchema } from '@hospitality-os/domain'
 
 import { enumCheck, primaryId, timestamps } from './columns.js'
 
@@ -320,6 +320,41 @@ export const authSessions = pgTable('auth_sessions', {
   check('auth_sessions_actor_type_check', enumCheck(table.actorType, ActorTypeSchema.options)),
 ])
 
+// Per-tenant per-provider integration credential store — shared across all
+// integration categories (payments, messaging, commerce, delivery, etc.).
+// Credentials are always stored encrypted (credentialsEncrypted = AES-256-GCM
+// via packages/database/src/security/encrypt.ts); the registeredNumbers field
+// is non-sensitive metadata used for Module 18's mobile-money fraud detection
+// (comparing the confirmed payment's till/paybill against this list without
+// decrypting credentials for every check).
+export const integrationConnections = pgTable('integration_connections', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  // null = org-wide connection (applies to all locations); non-null = location-specific
+  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'restrict' }),
+  category: text('category').notNull(),
+  provider: text('provider').notNull(),
+  // AES-256-GCM encrypted JSON blob — never logged, never returned in API
+  // responses after initial save (BUILD_WORKFLOW.md section 6 rule).
+  credentialsEncrypted: text('credentials_encrypted').notNull(),
+  // Non-sensitive metadata: e.g. M-Pesa shortcode, registered till/paybill
+  // numbers for fraud detection (Module 18), Paystack public key, etc.
+  metadata: jsonb('metadata'),
+  status: text('status').notNull().default('active'),
+  lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
+  errorMessage: text('error_message'),
+  ...timestamps,
+}, (table) => [
+  index('integration_connections_organization_id_idx').on(table.organizationId),
+  index('integration_connections_location_id_idx').on(table.locationId),
+  index('integration_connections_category_provider_idx').on(table.category, table.provider),
+  unique('integration_connections_org_location_provider_key').on(table.organizationId, table.locationId, table.provider),
+  check('integration_connections_category_check', enumCheck(table.category, IntegrationCategorySchema.options)),
+  check('integration_connections_status_check', enumCheck(table.status, IntegrationConnectionStatusSchema.options)),
+])
+
 // Marks which of the above tables carry tenant data and therefore require RLS —
 // consumed by the migration hand-edit step and by anything else (tests, docs)
 // that needs the same list without redefining it.
@@ -337,4 +372,5 @@ export const tenantScopedTables = [
   auditLogs,
   approvalRequests,
   authSessions,
+  integrationConnections,
 ] as const
