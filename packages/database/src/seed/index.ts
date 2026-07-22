@@ -1,0 +1,489 @@
+import { and, eq, isNull } from 'drizzle-orm'
+
+import { createSystemDb, createSystemPool, type Db } from '../client/index.js'
+import { hashSecret } from '../security/hash.js'
+import {
+  businesses,
+  devices,
+  floorPlans,
+  locations,
+  menuCategories,
+  menus,
+  modifierGroups,
+  modifiers,
+  organizations,
+  permissions,
+  productModifierGroups,
+  productPrices,
+  products,
+  restaurantTables,
+  rolePermissions,
+  roles,
+  staff,
+  staffRoles,
+  tenantSettings,
+  users,
+} from '../schema/index.js'
+
+// Starter capability catalog — deliberately small. New permissions are a data
+// insert (this list, or a future admin UI), not a code change; each
+// `docs/prd/*` module adds its own as it's implemented (see DATA_MODEL.md
+// "permissions").
+const SYSTEM_PERMISSIONS = [
+  'orders:create',
+  'orders:void_item',
+  'payments:take_cash',
+  'payments:refund',
+  'inventory:adjust',
+  'reports:view_profit',
+  'devices:activate',
+  'staff:deactivate',
+  // P3 — Menu + Product Catalog (docs/prd/03-menu-catalog.md Permissions table)
+  'products:manage',
+  'products:toggle_availability',
+  'products:view_price_history',
+  // Approval-request action key for a price change beyond the configurable
+  // threshold (ProductsService.LARGE_PRICE_CHANGE_ACTION) — deliberately
+  // withheld from branch_manager below even though that role otherwise gets
+  // the full SYSTEM_PERMISSIONS set, since the whole point is that a
+  // branch_manager's own large price change needs a genuine owner to sign
+  // off, not a peer who happens to share the role.
+  'products:approve_large_price_change',
+  // P4 — Floor Plan + Tables (docs/prd/04-floor-plan-tables.md Permissions
+  // table). `tables:manage` covers seat/status-change/merge/split/transfer
+  // within one's own section; `tables:manage_any_section` is the
+  // supervisor+ escalation for reassigning/merging tables assigned to
+  // someone else; `tables:block` and `tables:edit_layout` map directly to
+  // the PRD's "Block a table" / "Edit floor plan layout" rows.
+  'tables:manage',
+  'tables:manage_any_section',
+  'tables:block',
+  'tables:edit_layout',
+  // P5 — Order Engine Core (docs/prd/05-order-engine.md Permissions table,
+  // master plan section 22's Sales group). `orders:create`/`orders:void_item`
+  // above are the pre-existing placeholders this phase now actually grants
+  // and enforces. `orders:void_item` covers a pre-send void outright and
+  // gates the elevated post-send/served void-or-comp path (OrdersService
+  // checks the item's own state, not a separate permission, for that
+  // distinction — see ORDER_ITEM_PRE_SEND_STATUSES). `orders:void_bill` is
+  // the manager-tier permission that either performs a post-send void
+  // directly or resolves the approval request a lower-tier holder's attempt
+  // creates.
+  'orders:update_own',
+  'orders:update_any',
+  'orders:void_bill',
+  'orders:discount_small',
+  'orders:discount_large',
+  // Approval-request action keys OrdersService creates when a lower-tier
+  // holder's attempt needs sign-off (mirrors
+  // products:approve_large_price_change above) — ApprovalsController.resolve
+  // requires the *resolver* to hold a permission whose key equals the
+  // approval's `action` string literally, so these three must be real,
+  // seeded permissions too, not just constants inside OrdersService.
+  'orders:void_after_send',
+  'orders:comp_item',
+  'orders:discount_above_threshold',
+] as const
+
+// System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
+// added later by tenants themselves. The permission grants below are a
+// reasonable starting point, not a final authorization design — they'll grow
+// as more of SYSTEM_PERMISSIONS' owning modules ship.
+const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][]> = {
+  owner: [...SYSTEM_PERMISSIONS],
+  regional_manager: [...SYSTEM_PERMISSIONS],
+  branch_manager: SYSTEM_PERMISSIONS.filter((key) => key !== 'products:approve_large_price_change'),
+  supervisor: [
+    'orders:create',
+    'orders:void_item',
+    'payments:take_cash',
+    'payments:refund',
+    'inventory:adjust',
+    'devices:activate',
+    'products:toggle_availability',
+    'products:view_price_history',
+    'tables:manage',
+    'tables:manage_any_section',
+    'tables:block',
+    // Master plan section 22: supervisor "Approve small discounts" and
+    // "Reassign orders" — void_bill/discount_large stay branch_manager+
+    // (master plan names branch_manager, not supervisor, as the
+    // void/discount/refund approver).
+    'orders:update_any',
+    'orders:discount_small',
+  ],
+  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'products:toggle_availability'],
+  // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
+  // scoped to pre-send by OrdersService's own state check, not a narrower
+  // permission (master plan's Waiter Payment Policy doesn't grant waiters
+  // any discount capability, so discount_small/_large stay off this list).
+  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage'],
+  chef: ['products:toggle_availability'],
+  stock_controller: ['inventory:adjust'],
+  accountant: ['reports:view_profit', 'payments:refund'],
+  auditor: ['reports:view_profit'],
+}
+
+const seedSystemCatalog = async (db: Db) => {
+  const permissionIds = new Map<string, string>()
+  for (const key of SYSTEM_PERMISSIONS) {
+    await db.insert(permissions).values({ key }).onConflictDoNothing({ target: permissions.key })
+    const [row] = await db.select().from(permissions).where(eq(permissions.key, key))
+    if (!row) throw new Error(`failed to seed permission ${key}`)
+    permissionIds.set(key, row.id)
+  }
+
+  const roleIds = new Map<string, string>()
+  for (const name of Object.keys(SYSTEM_ROLES)) {
+    await db.insert(roles).values({ organizationId: null, name }).onConflictDoNothing()
+    const [row] = await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.name, name), isNull(roles.organizationId)))
+    if (!row) throw new Error(`failed to seed role ${name}`)
+    roleIds.set(name, row.id)
+  }
+
+  for (const [roleName, grantedKeys] of Object.entries(SYSTEM_ROLES)) {
+    const roleId = roleIds.get(roleName)
+    if (!roleId) continue
+    for (const key of grantedKeys) {
+      const permissionId = permissionIds.get(key)
+      if (!permissionId) continue
+      await db
+        .insert(rolePermissions)
+        .values({ organizationId: null, roleId, permissionId })
+        .onConflictDoNothing({ target: [rolePermissions.roleId, rolePermissions.permissionId] })
+    }
+  }
+
+  return { permissionIds, roleIds }
+}
+
+// Idempotent on its own — checked by menu existence, not gated behind
+// seedDemoRestaurant's org-exists early return, so re-running `pnpm db:seed`
+// against an already-seeded dev database (the normal case once P0/P2's
+// staff/org/device seed already ran) still backfills the P3 catalog data.
+const seedMenuCatalog = async (
+  db: Db,
+  org: { id: string; name: string },
+  location: { id: string },
+) => {
+  const [existingMenu] = await db.select().from(menus).where(eq(menus.organizationId, org.id))
+  if (existingMenu) {
+    console.warn('Menu catalog already seeded, skipping.')
+    return
+  }
+
+  // ProductsService.changePrice's fallback is 20% — this tenant runs a
+  // tighter 15% band, demonstrating the setting is actually read, not just
+  // defaulted (see TenantSettingsService).
+  await db.insert(tenantSettings).values({
+    organizationId: org.id,
+    locationId: null,
+    key: 'price_change_approval_threshold_pct',
+    value: 15,
+  })
+
+  // P3 demo catalog: one menu, one category, two reusable modifier groups,
+  // and a product attached to both — exercises BUILD_WORKFLOW.md P3's
+  // acceptance gate end to end (create category + product with two modifier
+  // groups, mark unavailable, search by local-language name).
+  const [menu] = await db
+    .insert(menus)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Main Menu', isDefault: true })
+    .returning()
+  if (!menu) throw new Error('failed to seed menu')
+
+  const [category] = await db
+    .insert(menuCategories)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      menuId: menu.id,
+      name: 'Brunch Mains',
+      localName: 'Vyakula vya Asubuhi',
+      defaultKdsStation: 'hot_kitchen',
+    })
+    .returning()
+  if (!category) throw new Error('failed to seed category')
+
+  const [spiceGroup] = await db
+    .insert(modifierGroups)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Spice Level', minSelect: 1, maxSelect: 1 })
+    .returning()
+  if (!spiceGroup) throw new Error('failed to seed spice modifier group')
+  await db.insert(modifiers).values([
+    { organizationId: org.id, modifierGroupId: spiceGroup.id, name: 'Mild', priceDelta: 0, currency: 'KES', sortOrder: 0 },
+    { organizationId: org.id, modifierGroupId: spiceGroup.id, name: 'Medium', priceDelta: 0, currency: 'KES', sortOrder: 1 },
+    { organizationId: org.id, modifierGroupId: spiceGroup.id, name: 'Hot', priceDelta: 0, currency: 'KES', sortOrder: 2 },
+  ])
+
+  const [addOnsGroup] = await db
+    .insert(modifierGroups)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Extra Toppings', minSelect: 0, maxSelect: 3 })
+    .returning()
+  if (!addOnsGroup) throw new Error('failed to seed add-ons modifier group')
+  await db.insert(modifiers).values([
+    { organizationId: org.id, modifierGroupId: addOnsGroup.id, name: 'Extra Avocado', priceDelta: 100, currency: 'KES', sortOrder: 0 },
+    { organizationId: org.id, modifierGroupId: addOnsGroup.id, name: 'Extra Cheese', priceDelta: 80, currency: 'KES', sortOrder: 1 },
+  ])
+
+  const [product] = await db
+    .insert(products)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      categoryId: category.id,
+      name: 'Nyama Choma Platter',
+      localName: 'Nyama Choma',
+      description: 'Grilled beef platter with sides',
+      sku: 'BRN-001',
+      priceAmount: 1200,
+      currency: 'KES',
+      status: 'active',
+    })
+    .returning()
+  if (!product) throw new Error('failed to seed product')
+
+  await db.insert(productPrices).values({
+    organizationId: org.id,
+    productId: product.id,
+    priceAmount: 1200,
+    currency: 'KES',
+    reason: 'initial price',
+  })
+
+  await db.insert(productModifierGroups).values([
+    { organizationId: org.id, productId: product.id, modifierGroupId: spiceGroup.id, sortOrder: 0 },
+    { organizationId: org.id, productId: product.id, modifierGroupId: addOnsGroup.id, sortOrder: 1 },
+  ])
+
+  console.warn(`Seeded P3 menu catalog for "${org.name}":`)
+  console.warn(`  menu_id:         ${menu.id}`)
+  console.warn(`  category_id:     ${category.id}`)
+  console.warn(`  demo product:    ${product.name} (${product.id}), sku ${product.sku}`)
+}
+
+// P4 — Floor Plan + Tables (docs/prd/04-floor-plan-tables.md, BUILD_WORKFLOW.md
+// P4) demo data: one floor plan, three tables — one already assigned to
+// waiterOneId (exercises the "own section" permission check), one
+// unassigned, one pre-blocked (exercises the tables:block-gated transition).
+// Idempotent by floor-plan existence, same pattern as seedMenuCatalog.
+const seedFloorPlanAndTables = async (
+  db: Db,
+  org: { id: string; name: string },
+  location: { id: string },
+  waiterOneId: string,
+) => {
+  const [existingFloorPlan] = await db.select().from(floorPlans).where(eq(floorPlans.organizationId, org.id))
+  if (existingFloorPlan) {
+    console.warn('Floor plan already seeded, skipping.')
+    return
+  }
+
+  const [floorPlan] = await db
+    .insert(floorPlans)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Main Dining Room' })
+    .returning()
+  if (!floorPlan) throw new Error('failed to seed floor plan')
+
+  await db.insert(restaurantTables).values([
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      floorPlanId: floorPlan.id,
+      label: 'T1',
+      section: 'patio',
+      capacity: 4,
+      assignedStaffId: waiterOneId,
+    },
+    { organizationId: org.id, locationId: location.id, floorPlanId: floorPlan.id, label: 'T2', section: 'patio', capacity: 2 },
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      floorPlanId: floorPlan.id,
+      label: 'T3',
+      section: 'main_hall',
+      capacity: 6,
+      shape: 'round',
+      status: 'blocked',
+    },
+  ])
+
+  console.warn(`Seeded P4 floor plan for "${org.name}": ${floorPlan.name} (${floorPlan.id}), tables T1-T3`)
+}
+
+const WAITER_ONE_PIN = '1111'
+const WAITER_TWO_PIN = '2222'
+
+// Idempotent by staff name, called from both the fresh-org and
+// already-seeded-org paths so a P4 backfill against a database seeded before
+// this phase existed still ends up with the waiters P4's demo data needs.
+const seedWaiters = async (db: Db, org: { id: string }, location: { id: string }, roleIds: Map<string, string>) => {
+  const waiterRoleId = roleIds.get('waiter')
+  if (!waiterRoleId) throw new Error('waiter system role missing')
+
+  const ensureWaiter = async (name: string, pin: string) => {
+    const [existingStaff] = await db.select().from(staff).where(and(eq(staff.organizationId, org.id), eq(staff.name, name)))
+    if (existingStaff) return existingStaff
+    const [created] = await db
+      .insert(staff)
+      .values({ organizationId: org.id, locationId: location.id, name, pinHash: await hashSecret(pin) })
+      .returning()
+    if (!created) throw new Error(`failed to seed ${name}`)
+    await db
+      .insert(staffRoles)
+      .values({ organizationId: org.id, staffId: created.id, roleId: waiterRoleId, locationId: location.id })
+      .onConflictDoNothing()
+    return created
+  }
+
+  const waiterOne = await ensureWaiter('Waiter One', WAITER_ONE_PIN)
+  const waiterTwo = await ensureWaiter('Waiter Two', WAITER_TWO_PIN)
+  return { waiterOne, waiterTwo }
+}
+
+const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
+  const existing = await db.select().from(organizations).where(eq(organizations.name, 'Izzi Brunch and Cake'))
+  if (existing[0]) {
+    console.warn('Seed organization already exists, skipping restaurant seed.')
+    const [location] = await db.select().from(locations).where(eq(locations.organizationId, existing[0].id))
+    if (location) {
+      await seedMenuCatalog(db, existing[0], location)
+      const { waiterOne } = await seedWaiters(db, existing[0], location, roleIds)
+      await seedFloorPlanAndTables(db, existing[0], location, waiterOne.id)
+    }
+    return
+  }
+
+  const [org] = await db
+    .insert(organizations)
+    .values({
+      name: 'Izzi Brunch and Cake',
+      legalName: 'Izzi Brunch and Cake',
+      country: 'KE',
+      defaultCurrency: 'KES',
+      timezone: 'Africa/Nairobi',
+    })
+    .returning()
+  if (!org) throw new Error('failed to seed organization')
+
+  const [business] = await db
+    .insert(businesses)
+    .values({ organizationId: org.id, name: org.name, vertical: 'restaurant' })
+    .returning()
+  if (!business) throw new Error('failed to seed business')
+
+  const [location] = await db
+    .insert(locations)
+    .values({
+      organizationId: org.id,
+      businessId: business.id,
+      name: 'Izzi Brunch and Cake — Main Branch',
+      code: 'MAIN',
+      country: 'KE',
+      currency: 'KES',
+      timezone: 'Africa/Nairobi',
+    })
+    .returning()
+  if (!location) throw new Error('failed to seed location')
+
+  const ownerPassword = 'DevOwner!2026'
+  const [owner] = await db
+    .insert(users)
+    .values({
+      organizationId: org.id,
+      name: 'Owner',
+      email: 'info@izzibrunchandcake.com',
+      passwordHash: await hashSecret(ownerPassword),
+      status: 'active',
+    })
+    .returning()
+  if (!owner) throw new Error('failed to seed owner user')
+
+  const managerPin = '1234'
+  const [manager] = await db
+    .insert(staff)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Branch Manager',
+      pinHash: await hashSecret(managerPin),
+    })
+    .returning()
+  if (!manager) throw new Error('failed to seed manager staff')
+
+  const cashierPin = '4321'
+  const [cashier] = await db
+    .insert(staff)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Cashier One',
+      pinHash: await hashSecret(cashierPin),
+    })
+    .returning()
+  if (!cashier) throw new Error('failed to seed cashier staff')
+
+  const branchManagerRoleId = roleIds.get('branch_manager')
+  const cashierRoleId = roleIds.get('cashier')
+  if (!branchManagerRoleId || !cashierRoleId) throw new Error('system roles missing')
+
+  await db.insert(staffRoles).values([
+    { organizationId: org.id, staffId: manager.id, roleId: branchManagerRoleId, locationId: location.id },
+    { organizationId: org.id, staffId: cashier.id, roleId: cashierRoleId, locationId: location.id },
+  ])
+
+  // Two waiters (not just one) so P4's "own section" permission check has a
+  // real second waiter to deny against — Waiter One owns T1, Waiter Two owns
+  // nothing, both exercisable via BUILD_WORKFLOW.md P4's acceptance gate.
+  const { waiterOne } = await seedWaiters(db, org, location, roleIds)
+
+  await db.insert(devices).values({
+    organizationId: org.id,
+    locationId: location.id,
+    name: 'Front Counter POS',
+    deviceType: 'pos',
+    platform: 'android',
+  })
+
+  await db.insert(tenantSettings).values({
+    organizationId: org.id,
+    locationId: null,
+    key: 'cash_variance_threshold',
+    value: { amount: 500, currency: 'KES' },
+  })
+
+  console.warn('Seeded demo restaurant "Izzi Brunch and Cake":')
+  console.warn(`  organization_id: ${org.id}`)
+  console.warn(`  location_id:     ${location.id}`)
+  console.warn(`  owner login:     ${owner.email} / ${ownerPassword}`)
+  console.warn(`  manager PIN:     ${managerPin} (location ${location.code})`)
+  console.warn(`  cashier PIN:     ${cashierPin} (location ${location.code})`)
+  console.warn(`  waiter one PIN:  ${WAITER_ONE_PIN} (location ${location.code})`)
+  console.warn(`  waiter two PIN:  ${WAITER_TWO_PIN} (location ${location.code})`)
+
+  await seedMenuCatalog(db, org, location)
+  await seedFloorPlanAndTables(db, org, location, waiterOne.id)
+}
+
+const run = async () => {
+  const connectionString = process.env['DATABASE_URL']
+  if (!connectionString) throw new Error('DATABASE_URL is required to run the seed script')
+
+  const pool = createSystemPool(connectionString)
+  const db = createSystemDb(pool)
+
+  try {
+    const { roleIds } = await seedSystemCatalog(db)
+    await seedDemoRestaurant(db, roleIds)
+  } finally {
+    await pool.end()
+  }
+}
+
+await run().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})

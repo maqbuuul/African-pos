@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784561490075,
+      "tag": "0000_shared_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784564824172,
+      "tag": "0001_p2_sessions_and_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784566817811,
+      "tag": "0002_p3_menu_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1784567900000,
+      "tag": "0003_fix_approval_actor_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784568972731,
+      "tag": "0004_p4_floor_plan_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784571094811,
+      "tag": "0005_p5_order_engine_core",
+      "breakpoints": true
+    }
+  ]
+}

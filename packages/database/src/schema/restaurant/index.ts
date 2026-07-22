@@ -324,3 +324,259 @@ export const tableMerges = pgTable('table_merges', {
   check('table_merges_distinct_tables_check', sql`${table.primaryTableId} <> ${table.mergedTableId}`),
 ])
 
+// ---------------------------------------------------------------------------
+// P5 — Order Engine Core (docs/prd/05-order-engine.md, BUILD_WORKFLOW.md P5).
+// Same RLS-is-hand-written reasoning as the P3/P4 blocks above. This is the
+// center-of-gravity module every later channel (QR, delivery, commerce)
+// produces orders into — see packages/domain's ORDER_STATUS_TRANSITIONS /
+// ORDER_ITEM_STATUS_TRANSITIONS for the state machines OrdersService enforces.
+// ---------------------------------------------------------------------------
+
+// Restaurant order/check (DATA_MODEL.md). `tableId` is null for counter sales
+// (PRD 05: "the engine must not assume every order has a table"). `customerId`
+// has no FK yet — P13 (CRM & Loyalty) customers table doesn't exist — same
+// forward-reference placeholder pattern as products.taxCategoryId.
+// `channel` is set once at creation and never mutated (Business Rules).
+export const orders = pgTable('orders', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  tableId: uuid('table_id').references(() => restaurantTables.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id'),
+  // 'set null' rather than 'restrict': same historical-attribution column as
+  // productPrices.changedByStaffId, not a live "currently assigned" pointer.
+  staffId: uuid('staff_id').references(() => staff.id, { onDelete: 'set null' }),
+  channel: text('channel').notNull(),
+  status: text('status').notNull().default('open'),
+  subtotalAmount: integer('subtotal_amount').notNull().default(0),
+  discountAmount: integer('discount_amount').notNull().default(0),
+  taxAmount: integer('tax_amount').notNull().default(0),
+  serviceChargeAmount: integer('service_charge_amount').notNull().default(0),
+  totalAmount: integer('total_amount').notNull().default(0),
+  currency: text('currency').notNull(),
+  openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('orders_organization_id_idx').on(table.organizationId),
+  index('orders_location_id_idx').on(table.locationId),
+  index('orders_table_id_idx').on(table.tableId),
+  index('orders_staff_id_idx').on(table.staffId),
+  index('orders_status_idx').on(table.status),
+  check('orders_currency_len_check', sql`char_length(${table.currency}) = 3`),
+  check('orders_channel_check', enumCheck(table.channel, OrderChannelSchema.options)),
+  check('orders_status_check', enumCheck(table.status, OrderStatusSchema.options)),
+])
+
+// Items on an order (DATA_MODEL.md). Snapshots product name/price and each
+// selected modifier's name/price at the moment the item is added (PRD 05
+// Business Rules: "never a live join against current product data" — this is
+// what keeps a historical order immutable even as the menu changes later).
+export const orderItems = pgTable('order_items', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'restrict' }),
+  productId: uuid('product_id')
+    .notNull()
+    .references(() => products.id, { onDelete: 'restrict' }),
+  nameSnapshot: text('name_snapshot').notNull(),
+  localNameSnapshot: text('local_name_snapshot'),
+  // Optional per PRD 05's order builder workflow ("seat/course assignment is
+  // inline, not a separate step").
+  seatNumber: integer('seat_number'),
+  course: text('course'),
+  kitchenNote: text('kitchen_note'),
+  quantity: integer('quantity').notNull().default(1),
+  unitPriceAmount: integer('unit_price_amount').notNull(),
+  // Sum of the selected modifiers' priceDelta, per unit, at snapshot time —
+  // orderItemModifiers below holds the per-modifier breakdown this is derived
+  // from; this column exists so total-recompute doesn't need the join.
+  modifiersPriceAmount: integer('modifiers_price_amount').notNull().default(0),
+  // Gross line total before this item's own discount: (unitPrice +
+  // modifiersPrice) * quantity. Recomputed by OrdersService on every
+  // quantity/modifier change, never hand-edited (Business Rules).
+  totalAmount: integer('total_amount').notNull(),
+  discountAmount: integer('discount_amount').notNull().default(0),
+  currency: text('currency').notNull(),
+  // Forward-reference snapshot of products.taxCategoryId — Module 18's
+  // country tax adapter doesn't exist yet, same no-FK-yet reasoning as the
+  // column it's copied from.
+  taxCategoryId: uuid('tax_category_id'),
+  status: text('status').notNull().default('draft'),
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  voidReason: text('void_reason'),
+  compReason: text('comp_reason'),
+  // No FK: dual-target (users vs. staff) pattern, same as audit_logs.actorId —
+  // a void/comp approver can be either actor type.
+  resolvedByActorId: uuid('resolved_by_actor_id'),
+  ...timestamps,
+}, (table) => [
+  index('order_items_organization_id_idx').on(table.organizationId),
+  index('order_items_location_id_idx').on(table.locationId),
+  index('order_items_order_id_idx').on(table.orderId),
+  index('order_items_product_id_idx').on(table.productId),
+  index('order_items_status_idx').on(table.status),
+  check('order_items_quantity_check', sql`${table.quantity} > 0`),
+  check('order_items_currency_len_check', sql`char_length(${table.currency}) = 3`),
+  check('order_items_status_check', enumCheck(table.status, OrderItemStatusSchema.options)),
+])
+
+// Modifiers captured at time of sale (DATA_MODEL.md) — one row per selected
+// modifier per order item, snapshotting name/price the same way orderItems
+// snapshots the product itself.
+export const orderItemModifiers = pgTable('order_item_modifiers', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  orderItemId: uuid('order_item_id')
+    .notNull()
+    .references(() => orderItems.id, { onDelete: 'cascade' }),
+  modifierId: uuid('modifier_id')
+    .notNull()
+    .references(() => modifiers.id, { onDelete: 'restrict' }),
+  nameSnapshot: text('name_snapshot').notNull(),
+  priceDeltaAmount: integer('price_delta_amount').notNull().default(0),
+  currency: text('currency').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('order_item_modifiers_organization_id_idx').on(table.organizationId),
+  index('order_item_modifiers_order_item_id_idx').on(table.orderItemId),
+  check('order_item_modifiers_currency_len_check', sql`char_length(${table.currency}) = 3`),
+])
+
+// Applied discount entries (PRD 05 Business Rules: "discounts are recorded as
+// their own entries (never merged into price)"). Not in DATA_MODEL.md's
+// literal orders bullet list, but required by the same Business Rule that
+// requires order.discount_amount to be a sum of real, reasoned entries — same
+// "the schema grows to match the PRD" precedent as P3's productPrices and P4's
+// tableMerges. `orderItemId` null means a bill/order-level discount rather
+// than a single item's.
+export const orderDiscounts = pgTable('order_discounts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'restrict' }),
+  orderItemId: uuid('order_item_id').references(() => orderItems.id, { onDelete: 'cascade' }),
+  discountType: text('discount_type').notNull(),
+  // Percentage discounts store 0-100; fixed discounts store a money amount in
+  // the same whole-currency-unit convention as products.priceAmount.
+  discountValue: integer('discount_value').notNull(),
+  amountApplied: integer('amount_applied').notNull(),
+  currency: text('currency').notNull(),
+  reason: text('reason'),
+  appliedByActorId: uuid('applied_by_actor_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('order_discounts_organization_id_idx').on(table.organizationId),
+  index('order_discounts_order_id_idx').on(table.orderId),
+  check('order_discounts_value_check', sql`${table.discountValue} > 0`),
+  check('order_discounts_amount_applied_check', sql`${table.amountApplied} >= 0`),
+  check('order_discounts_currency_len_check', sql`char_length(${table.currency}) = 3`),
+  check('order_discounts_type_check', enumCheck(table.discountType, ['percentage', 'fixed'])),
+])
+
+// Payable bill generated from one order (DATA_MODEL.md). Supports split
+// bills — see billItems below for how a bill references its subset of order
+// items without duplicating them (PRD 05 "Splitting into bills").
+export const bills = pgTable('bills', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'restrict' }),
+  billNumber: integer('bill_number').notNull(),
+  splitMethod: text('split_method'),
+  status: text('status').notNull().default('open'),
+  subtotalAmount: integer('subtotal_amount').notNull().default(0),
+  discountAmount: integer('discount_amount').notNull().default(0),
+  taxAmount: integer('tax_amount').notNull().default(0),
+  serviceChargeAmount: integer('service_charge_amount').notNull().default(0),
+  tipAmount: integer('tip_amount').notNull().default(0),
+  totalAmount: integer('total_amount').notNull().default(0),
+  currency: text('currency').notNull(),
+  // Set once P7 (Payments Core) actually captures payment for this bill — see
+  // BillStatusSchema: PRD 05 explicitly hands off payment capture itself to
+  // PRD 07, this phase only carries a bill to `payment_pending`.
+  paidAt: timestamp('paid_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('bills_organization_id_idx').on(table.organizationId),
+  index('bills_location_id_idx').on(table.locationId),
+  index('bills_order_id_idx').on(table.orderId),
+  index('bills_status_idx').on(table.status),
+  unique('bills_order_id_bill_number_key').on(table.orderId, table.billNumber),
+  check('bills_currency_len_check', sql`char_length(${table.currency}) = 3`),
+  check('bills_status_check', enumCheck(table.status, BillStatusSchema.options)),
+  check('bills_split_method_check', enumCheck(table.splitMethod, BillSplitMethodSchema.options)),
+])
+
+// Line allocation to a bill (DATA_MODEL.md). A join, not a copy: order items
+// are "referenced not duplicated" across bills (PRD 05) — `allocatedAmount`
+// lets an evenly-split bill reference the same order item as another bill,
+// each carrying only its own share.
+export const billItems = pgTable('bill_items', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  billId: uuid('bill_id')
+    .notNull()
+    .references(() => bills.id, { onDelete: 'cascade' }),
+  orderItemId: uuid('order_item_id')
+    .notNull()
+    .references(() => orderItems.id, { onDelete: 'cascade' }),
+  allocatedAmount: integer('allocated_amount').notNull(),
+  currency: text('currency').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('bill_items_organization_id_idx').on(table.organizationId),
+  index('bill_items_bill_id_idx').on(table.billId),
+  index('bill_items_order_item_id_idx').on(table.orderItemId),
+  unique('bill_items_bill_id_order_item_id_key').on(table.billId, table.orderItemId),
+  check('bill_items_allocated_amount_check', sql`${table.allocatedAmount} >= 0`),
+  check('bill_items_currency_len_check', sql`char_length(${table.currency}) = 3`),
+])
+
+// Same purpose as shared/index.ts's tenantScopedTables — the migration
+// hand-edit step's checklist, kept next to the tables it describes.
+export const restaurantTenantScopedTables = [
+  menus,
+  menuCategories,
+  products,
+  productPrices,
+  modifierGroups,
+  modifiers,
+  productModifierGroups,
+  floorPlans,
+  restaurantTables,
+  tableMerges,
+  orders,
+  orderItems,
+  orderItemModifiers,
+  orderDiscounts,
+  bills,
+  billItems,
+] as const
