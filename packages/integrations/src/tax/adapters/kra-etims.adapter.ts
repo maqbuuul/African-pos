@@ -22,12 +22,11 @@ export class KraEtimesAdapter implements TaxAdapter {
   }
 
   async submitInvoice(input: TaxSubmitInput): Promise<TaxSubmitResult> {
-    // Build the KRA eTIMS invoice payload per their API spec.
-    // In production this POSTs to KRA's eTIMS API; in offline/retry scenarios
-    // the caller queues this through the operation log and retries later.
-    const payload = this.buildInvoicePayload(input)
-
     try {
+      // Build the KRA eTIMS invoice payload per their API spec.
+      // In production this POSTs to KRA's eTIMS API; in offline/retry scenarios
+      // the caller queues this through the operation log and retries later.
+      // const payload = this.buildInvoicePayload(input)
       // In a real deployment, this would be an HTTP POST to KRA's API:
       // const response = await fetch(`${this.baseUrl}/submitInvoice`, {
       //   method: 'POST',

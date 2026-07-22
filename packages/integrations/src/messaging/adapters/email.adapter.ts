@@ -5,7 +5,7 @@ import type { MessagingAdapter, SendMessageInput, SendMessageResult, MessagingHe
 export class EmailAdapter implements MessagingAdapter {
   readonly channel = 'email'
 
-  async send(input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
+  async send(_input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
     try {
       // In production, this calls an email provider (Resend, SendGrid, SES, SMTP).
       await new Promise((resolve) => setTimeout(resolve, 100))

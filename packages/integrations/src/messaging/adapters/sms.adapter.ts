@@ -6,7 +6,7 @@ import type { MessagingAdapter, SendMessageInput, SendMessageResult, MessagingHe
 export class SmsAdapter implements MessagingAdapter {
   readonly channel = 'sms'
 
-  async send(input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
+  async send(_input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
     try {
       // In production, this calls an SMS provider API (e.g. Africa's Talking, Twilio).
       await new Promise((resolve) => setTimeout(resolve, 100))

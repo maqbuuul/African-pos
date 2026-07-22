@@ -8,7 +8,7 @@ import type { MessagingAdapter, SendMessageInput, SendMessageResult, MessagingHe
 export class PrintAdapter implements MessagingAdapter {
   readonly channel = 'print'
 
-  async send(input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
+  async send(_input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
     try {
       // In production, this sends the formatted text to a network printer
       // via TCP/IP (port 9100 — ESC/POS protocol), or writes to a local

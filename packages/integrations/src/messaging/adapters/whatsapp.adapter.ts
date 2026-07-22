@@ -8,7 +8,7 @@ import type { MessagingAdapter, SendMessageInput, SendMessageResult, MessagingHe
 export class WhatsAppAdapter implements MessagingAdapter {
   readonly channel = 'whatsapp'
 
-  async send(input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
+  async send(_input: SendMessageInput, _credentials: Record<string, string>): Promise<SendMessageResult> {
     try {
       // In production, this calls the WhatsApp Business API:
       // POST /v1/messages with template or text message.
