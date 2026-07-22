@@ -6,3 +6,4 @@ export const databasePackage = {
 export * from './schema/index.js'
 export * from './client/index.js'
 export * from './security/hash.js'
+export * from './security/encrypt.js'
