@@ -1,0 +1,39 @@
+{
+  "name": "african-hospitality-os",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI-powered Hospitality and Commerce Operating System for Africa.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md}\"",
+    "dev:api": "pnpm --filter @hospitality-os/api dev",
+    "dev:manager": "pnpm --filter @hospitality-os/manager-web dev",
+    "dev:owner": "pnpm --filter @hospitality-os/owner-web dev",
+    "dev:kds": "pnpm --filter @hospitality-os/kds-web dev",
+    "dev:customer": "pnpm --filter @hospitality-os/customer-web dev",
+    "dev:marketing": "pnpm --filter @hospitality-os/marketing-web dev",
+    "dev:pos": "pnpm --filter @hospitality-os/pos-mobile start"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.37.3",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "prettier": "^3.4.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  }
+}
+

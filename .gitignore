@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build output
+dist/
+build/
+.next/
+.turbo/
+.astro/
+coverage/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Python
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.pyc
+
+# Mobile — apps/pos-mobile uses the bare/dev-client Expo workflow (ADR 0001),
+# so android/ and ios/ are committed, not regenerated per-machine. Only their
+# own build artifacts are ignored (see apps/pos-mobile/android/.gitignore).
+.expo/
+apps/pos-mobile/android/build/
+apps/pos-mobile/android/app/build/
+apps/pos-mobile/android/.gradle/
+apps/pos-mobile/android/.cxx/
+apps/pos-mobile/ios/build/
+apps/pos-mobile/ios/Pods/
+
+# Local data
+*.sqlite
+*.db
+tmp/
+

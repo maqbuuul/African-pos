@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hospitality_os_postgres
+    environment:
+      POSTGRES_DB: hospitality_os_dev
+      POSTGRES_USER: pos_user
+      POSTGRES_PASSWORD: pos_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pos_user -d hospitality_os_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: hospitality_os_redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
+    container_name: hospitality_os_meilisearch
+    profiles: ["search"]
+    environment:
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: dev_master_key_change_me
+    ports:
+      - "7700:7700"
+    volumes:
+      - meilisearch_data:/meili_data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: hospitality_os_clickhouse
+    profiles: ["analytics"]
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  # --- full-stack profile -----------------------------------------------
+  # Everything above is what `docker compose up -d` starts by default —
+  # just the infra a natively-run `pnpm dev:*` needs (see CONTRIBUTING.md).
+  # The services below build and run the actual apps in containers, the
+  # same shape they run in production (Fly.io/Hetzner+Coolify, ADR 0001) —
+  # for seeing the whole system running end-to-end or a pre-deploy smoke
+  # test, not day-to-day feature development (no hot reload; rebuild on
+  # every code change). Run with:
+  #   docker compose --profile full-stack up -d --build
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: prod
+    container_name: hospitality_os_api
+    profiles: ["full-stack"]
+    environment:
+      NODE_ENV: production
+      API_PORT: 3000
+      DATABASE_URL: postgresql://pos_user:pos_password@postgres:5432/hospitality_os_dev
+      APP_DATABASE_URL: postgresql://pos_app:pos_app_password@postgres:5432/hospitality_os_dev
+      REDIS_URL: redis://redis:6379
+      AI_ML_SERVICE_URL: http://ai-ml:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ai-ml:
+    build:
+      context: services/ai-ml
+      target: prod
+    container_name: hospitality_os_ai_ml
+    profiles: ["full-stack"]
+    environment:
+      AI_ML_SERVICE_SECRET: dev_internal_ai_ml_secret_change_me
+    ports:
+      - "8000:8000"
+
+  manager-web:
+    build:
+      context: .
+      dockerfile: apps/manager-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_manager_web
+    profiles: ["full-stack"]
+    ports:
+      - "5173:80"
+    depends_on: [api]
+
+  owner-web:
+    build:
+      context: .
+      dockerfile: apps/owner-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_owner_web
+    profiles: ["full-stack"]
+    ports:
+      - "5174:80"
+    depends_on: [api]
+
+  kds-web:
+    build:
+      context: .
+      dockerfile: apps/kds-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_kds_web
+    profiles: ["full-stack"]
+    ports:
+      - "5175:80"
+    depends_on: [api]
+
+  admin-web:
+    build:
+      context: .
+      dockerfile: apps/admin-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_admin_web
+    profiles: ["full-stack"]
+    ports:
+      - "5176:80"
+    depends_on: [api]
+
+  customer-web:
+    build:
+      context: .
+      dockerfile: apps/customer-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_customer_web
+    profiles: ["full-stack"]
+    ports:
+      - "3001:80"
+    depends_on: [api]
+
+  marketing-web:
+    build:
+      context: .
+      dockerfile: apps/marketing-web/Dockerfile
+      target: prod
+    container_name: hospitality_os_marketing_web
+    profiles: ["full-stack"]
+    ports:
+      - "4321:80"
+
+volumes:
+  postgres_data:
+  redis_data:
+  meilisearch_data:
+  clickhouse_data:
+

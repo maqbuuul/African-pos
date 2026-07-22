@@ -1,0 +1,13 @@
+{
+  "name": "@hospitality-os/developer-portal",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "echo \"Developer portal (P19) will be added after the internal API contract is stable — see BUILD_WORKFLOW.md P19.\"",
+    "build": "echo \"No developer-portal build yet.\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

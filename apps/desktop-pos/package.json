@@ -1,0 +1,14 @@
+{
+  "name": "@hospitality-os/desktop-pos",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "echo \"Tauri desktop POS will be added after mobile/tablet POS stabilizes.\"",
+    "build": "echo \"No desktop build yet.\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
+

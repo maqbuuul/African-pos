@@ -1,0 +1,13 @@
+node_modules
+dist
+build
+.next
+.turbo
+.expo
+android
+ios
+coverage
+pnpm-lock.yaml
+archive
+packages/database/src/migrations
+apps/marketing-web/.astro

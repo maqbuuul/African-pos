@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "Hospitality OS POS",
+    "slug": "hospitality-os-pos",
+    "scheme": "hospitalitypos",
+    "platforms": ["android", "ios"],
+    "orientation": "landscape",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.hospitalityos.pos"
+    },
+    "ios": {
+      "bundleIdentifier": "com.hospitalityos.pos",
+      "supportsTablet": true
+    },
+    "plugins": ["expo-sqlite"]
+  }
+}
+

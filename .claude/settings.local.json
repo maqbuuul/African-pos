@@ -2,7 +2,34 @@
   "permissions": {
     "allow": [
       "Bash(ls /home/maqbuul/Documents/African-pos/ && mkdir -p /home/maqbuul/Documents/African-pos/research)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:www.simbapos.co.ke)",
+      "WebFetch(domain:techcabal.com)",
+      "WebFetch(domain:blog.slantco.com)",
+      "WebFetch(domain:www.businessdailyafrica.com)",
+      "WebFetch(domain:eliteteqpos.com)",
+      "WebFetch(domain:www.the-star.co.ke)",
+      "WebFetch(domain:hapakenya.com)",
+      "WebFetch(domain:www.nurishatrust.org)",
+      "WebFetch(domain:spondoo.ke)",
+      "WebFetch(domain:www.knbs.or.ke)",
+      "WebFetch(domain:www.tuko.co.ke)",
+      "WebFetch(domain:alphacap.co.ke)",
+      "WebFetch(domain:jiwanitech.com)",
+      "WebFetch(domain:www.kenyans.co.ke)",
+      "WebFetch(domain:www.cuteprofit.com)",
+      "WebFetch(domain:techpoint.africa)",
+      "WebFetch(domain:apps.fas.usda.gov)",
+      "WebFetch(domain:www.agcenture.com)",
+      "WebFetch(domain:www.pesapal.com)",
+      "WebFetch(domain:thebusinesswatch.com)",
+      "WebFetch(domain:tri.go.ke)",
+      "WebFetch(domain:www.standardmedia.co.ke)",
+      "WebFetch(domain:robisearch.com)",
+      "WebFetch(domain:www.safaricom.co.ke)",
+      "WebFetch(domain:nids.co.ke)",
+      "WebFetch(domain:www.capterra.com)",
+      "Bash(docker compose *)"
     ],
     "additionalDirectories": [
       "/home/maqbuul/Documents/African-pos"
