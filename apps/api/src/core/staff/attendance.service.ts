@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import { staffAttendance, withTenantContext } from '@hospitality-os/database'
+import { staff, staffAttendance, withTenantContext } from '@hospitality-os/database'
 
 import { AuditLogService } from '../audit/audit-log.service.js'
 import { APP_POOL } from '../tenant/tenant.constants.js'
@@ -120,6 +120,29 @@ export class AttendanceService {
         )
         .orderBy(staffAttendance.clockIn)
         .limit(limit)
+    })
+  }
+
+  async attendanceSummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          staffId: staffAttendance.staffId,
+          staffName: sql<string>`MAX(${staff.name})`,
+          totalShifts: sql<number>`COUNT(*)`,
+          totalHours: sql<number>`COALESCE(SUM(EXTRACT(EPOCH FROM (${staffAttendance.clockOut} - ${staffAttendance.clockIn})) / 3600), 0)`,
+          avgHoursPerShift: sql<number>`COALESCE(AVG(EXTRACT(EPOCH FROM (${staffAttendance.clockOut} - ${staffAttendance.clockIn})) / 3600), 0)`,
+          breakCount: sql<number>`COUNT(*) FILTER (WHERE ${staffAttendance.breakStart} IS NOT NULL)`,
+          onTimeCount: sql<number>`COUNT(*) FILTER (WHERE ${staffAttendance.status} = 'completed')`,
+          lateCount: sql<number>`COUNT(*) FILTER (WHERE ${staffAttendance.status} = 'late')`,
+          absentCount: sql<number>`COUNT(*) FILTER (WHERE ${staffAttendance.status} = 'absent')`,
+        })
+        .from(staffAttendance)
+        .leftJoin(staff, eq(staffAttendance.staffId, staff.id))
+        .where(and(eq(staffAttendance.organizationId, authContext.organizationId), eq(staffAttendance.locationId, locationId), sql`${staffAttendance.clockIn} >= ${from}`, sql`${staffAttendance.clockIn} <= ${to}`))
+        .groupBy(staffAttendance.staffId)
+        .orderBy(desc(sql`SUM(EXTRACT(EPOCH FROM (${staffAttendance.clockOut} - ${staffAttendance.clockIn})) / 3600)`))
+      return { from, to, rows }
     })
   }
 }

@@ -62,4 +62,10 @@ export class AttendanceController {
       limit ? Number(limit) : undefined,
     )
   }
+
+  @Get('reports/summary')
+  @RequirePermission('attendance:manage')
+  summary(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.attendanceService.attendanceSummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
 }
