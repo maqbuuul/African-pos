@@ -119,6 +119,10 @@ const SYSTEM_PERMISSIONS = [
   'receipts:resend',
   'receipts:view_status',
   'receipts:configure_preferences', // owner/manager — per-location notification config
+  // P10 — Offline Sync (docs/prd/11-offline-sync.md Permissions table).
+  'sync:view_device_health', // branch_manager+ — per-device sync health within own location
+  'sync:view_conflicts',     // branch_manager+ — view conflict review queue
+  'sync:resolve_conflicts',  // branch_manager+ — resolve flagged conflicts
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are

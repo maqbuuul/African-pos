@@ -13,6 +13,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@hospitality-os/domain": "workspace:*",
     "zod": "^3.24.1"
   },
   "devDependencies": {

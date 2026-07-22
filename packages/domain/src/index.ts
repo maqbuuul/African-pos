@@ -461,3 +461,104 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
+// P10 — Offline Sync (BUILD_WORKFLOW.md P11, master plan section 27).
+// Operation types for the upload-queue write path.
+export const SyncOperationTypeSchema = z.enum([
+  'create',
+  'update',
+  'delete',
+  'upsert',
+])
+export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>
+
+// Entities that can be synced offline.
+export const SyncEntityTypeSchema = z.enum([
+  'order',
+  'order_item',
+  'order_item_modifier',
+  'payment',
+  'refund',
+  'tip',
+  'receipt',
+  'shift',
+  'cash_drawer_session',
+  'cash_drawer_adjustment',
+  'customer',
+  'audit_event',
+])
+export type SyncEntityType = z.infer<typeof SyncEntityTypeSchema>
+
+// Conflict resolution strategies for the sync conflict policy.
+export const ConflictResolutionSchema = z.enum([
+  'server_wins',
+  'append_merge',
+  'manual_review',
+  'payment_dependent',
+])
+export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>
+
+// Sync operation status.
+export const SyncOperationStatusSchema = z.enum([
+  'pending',
+  'synced',
+  'conflict',
+  'failed',
+])
+export type SyncOperationStatus = z.infer<typeof SyncOperationStatusSchema>
+
+// Device connectivity status for health monitoring.
+export const DeviceSyncStatusSchema = z.enum([
+  'online',
+  'syncing',
+  'catching_up',
+  'offline',
+])
+export type DeviceSyncStatus = z.infer<typeof DeviceSyncStatusSchema>
+
+// Per-device sync health information.
+export const DeviceHealthSchema = z.object({
+  deviceId: z.string(),
+  organizationId: z.string(),
+  locationId: z.string(),
+  syncStatus: DeviceSyncStatusSchema,
+  lastSyncedAt: z.string().nullable(),
+  pendingOperationCount: z.number().int().min(0),
+  batteryLevel: z.number().min(0).max(100).optional(),
+  onBattery: z.boolean().optional(),
+})
+export type DeviceHealth = z.infer<typeof DeviceHealthSchema>
+
+// Full sync operation shape for the upload queue (master plan section 27).
+export const SyncOperationSchema = z.object({
+  opId: z.string(),
+  organizationId: z.string(),
+  locationId: z.string(),
+  deviceId: z.string(),
+  actorId: z.string(),
+  entityType: SyncEntityTypeSchema,
+  entityId: z.string(),
+  operation: SyncOperationTypeSchema,
+  payload: z.record(z.unknown()),
+  createdAt: z.string(),
+  baseVersion: z.number().int().optional(),
+  idempotencyKey: z.string().optional(),
+})
+export type SyncOperation = z.infer<typeof SyncOperationSchema>
+
+// Server response after a push operation batch.
+export const SyncPushResultSchema = z.object({
+  accepted: z.array(z.object({
+    opId: z.string(),
+    serverEntityId: z.string().optional(),
+  })),
+  conflicts: z.array(z.object({
+    opId: z.string(),
+    entityType: SyncEntityTypeSchema,
+    entityId: z.string(),
+    serverVersion: z.unknown(),
+    clientVersion: z.unknown(),
+    message: z.string(),
+  })),
+})
+export type SyncPushResult = z.infer<typeof SyncPushResultSchema>
+

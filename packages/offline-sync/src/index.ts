@@ -1,18 +1,22 @@
-import { z } from 'zod'
+export {
+  SyncOperationTypeSchema,
+  SyncEntityTypeSchema,
+  ConflictResolutionSchema,
+  SyncOperationStatusSchema,
+  DeviceSyncStatusSchema,
+  DeviceHealthSchema,
+  SyncOperationSchema,
+  SyncPushResultSchema,
+  type SyncOperationType,
+  type SyncEntityType,
+  type ConflictResolution,
+  type SyncOperationStatus,
+  type DeviceSyncStatus,
+  type DeviceHealth,
+  type SyncOperation,
+  type SyncPushResult,
+} from '@hospitality-os/domain'
 
-export const SyncOperationSchema = z.object({
-  opId: z.string(),
-  tenantId: z.string(),
-  locationId: z.string(),
-  deviceId: z.string(),
-  actorId: z.string(),
-  entityType: z.string(),
-  entityId: z.string(),
-  operation: z.string(),
-  payload: z.record(z.unknown()),
-  createdAt: z.string(),
-  baseVersion: z.number().int().optional(),
-})
-
-export type SyncOperation = z.infer<typeof SyncOperationSchema>
-
+export { OperationLogBuilder } from './operation-log.js'
+export { ConflictPolicyEngine } from './conflict-policy.js'
+export { buildSyncTokenPayload, type SyncTokenPayload } from './sync-token.js'

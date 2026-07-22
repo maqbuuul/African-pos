@@ -1,0 +1,39 @@
+# P10 — Offline Sync: PowerSync Sync Rules (Download Path).
+# See docs/adr/0001-tech-stack.md decision 6 for architecture rationale.
+# See master plan section 27 for the full bucket design.
+bucket_definitions:
+  catalog:
+    parameters: SELECT location_id FROM devices WHERE id = token_parameters.device_id
+    data:
+      - SELECT * FROM products WHERE location_id = bucket.location_id
+      - SELECT * FROM product_prices WHERE product_id IN
+          (SELECT id FROM products WHERE location_id = bucket.location_id)
+          AND effective_to IS NULL
+      - SELECT * FROM menu_categories WHERE location_id = bucket.location_id
+      - SELECT * FROM modifier_groups WHERE location_id = bucket.location_id
+      - SELECT * FROM modifiers
+      - SELECT * FROM floor_plans WHERE location_id = bucket.location_id
+      - SELECT * FROM restaurant_tables WHERE location_id = bucket.location_id
+
+  staff_and_permissions:
+    parameters: SELECT location_id FROM devices WHERE id = token_parameters.device_id
+    data:
+      - SELECT * FROM staff WHERE location_id = bucket.location_id
+      - SELECT * FROM staff_roles WHERE location_id = bucket.location_id
+      - SELECT * FROM role_permissions
+      - SELECT * FROM permissions
+
+  active_orders:
+    parameters: SELECT location_id FROM devices WHERE id = token_parameters.device_id
+    data:
+      - SELECT * FROM orders WHERE location_id = bucket.location_id
+          AND (status != 'closed' OR closed_at > now() - interval '24 hours')
+      - SELECT * FROM order_items WHERE order_id IN
+          (SELECT id FROM orders WHERE location_id = bucket.location_id
+           AND (status != 'closed' OR closed_at > now() - interval '24 hours'))
+
+  tenant_settings:
+    parameters: SELECT organization_id, location_id FROM devices WHERE id = token_parameters.device_id
+    data:
+      - SELECT * FROM tenant_settings WHERE organization_id = bucket.organization_id
+          AND (location_id = bucket.location_id OR location_id IS NULL)

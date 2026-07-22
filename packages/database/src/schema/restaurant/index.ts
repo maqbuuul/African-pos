@@ -5,7 +5,9 @@ import {
   BillStatusSchema,
   CashAdjustmentDirectionSchema,
   CashDrawerSessionStatusSchema,
-   EntityStatusSchema,
+  ConflictResolutionSchema,
+  DeviceSyncStatusSchema,
+  EntityStatusSchema,
   KdsTicketItemStatusSchema,
   KdsTicketStatusSchema,
   ModifierStatusSchema,
@@ -21,6 +23,9 @@ import {
   ReceiptChannelSchema,
   RefundStatusSchema,
   ShiftStatusSchema,
+  SyncEntityTypeSchema,
+  SyncOperationStatusSchema,
+  SyncOperationTypeSchema,
   TableShapeSchema,
   TableStatusSchema,
   TaxProviderSchema,
@@ -1091,6 +1096,103 @@ export const notificationPreferences = pgTable('notification_preferences', {
   check('notification_preferences_subject_type_check', enumCheck(table.subjectType, NotificationSubjectTypeSchema.options)),
 ])
 
+// ---------------------------------------------------------------------------
+// P10 — Offline Sync (docs/prd/11-offline-sync.md, BUILD_WORKFLOW.md P11,
+// master plan section 27). Sync operations uploaded from devices,
+// per-device cursors, and conflicts requiring manual review.
+// ---------------------------------------------------------------------------
+
+// Append-only log of operations uploaded from devices via POST /sync/push.
+// The upload queue drains through a custom upload handler (not PowerSync's
+// CRUD queue) per ADR 0001 decision 6 — write path remains fully custom.
+export const syncOperations = pgTable('sync_operations', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  deviceId: uuid('device_id').notNull(),
+  actorId: uuid('actor_id').notNull(),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id').notNull(),
+  operation: text('operation').notNull(),
+  payload: jsonb('payload').notNull().default({}),
+  baseVersion: integer('base_version'),
+  idempotencyKey: text('idempotency_key'),
+  status: text('status').notNull().default('synced'),
+  errorMessage: text('error_message'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  ...timestamps,
+}, (table) => [
+  index('sync_operations_organization_id_idx').on(table.organizationId),
+  index('sync_operations_device_id_idx').on(table.deviceId),
+  index('sync_operations_status_idx').on(table.status),
+  index('sync_operations_idempotency_key_idx').on(table.idempotencyKey),
+  unique('sync_operations_idempotency_key_unique').on(table.organizationId, table.idempotencyKey),
+  check('sync_operations_entity_type_check', enumCheck(table.entityType, SyncEntityTypeSchema.options)),
+  check('sync_operations_operation_check', enumCheck(table.operation, SyncOperationTypeSchema.options)),
+  check('sync_operations_status_check', enumCheck(table.status, SyncOperationStatusSchema.options)),
+])
+
+// Per-device sync cursor — tracks last sync checkpoint for PowerSync download
+// path and the upload queue. One row per active device per location.
+export const syncCursors = pgTable('sync_cursors', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  deviceId: uuid('device_id').notNull().unique(),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
+  lastCursorValue: text('last_cursor_value'),
+  pendingOperationCount: integer('pending_operation_count').notNull().default(0),
+  syncStatus: text('sync_status').notNull().default('online'),
+  batteryLevel: integer('battery_level'),
+  onBattery: boolean('on_battery').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('sync_cursors_organization_id_idx').on(table.organizationId),
+  index('sync_cursors_device_id_idx').on(table.deviceId),
+  check('sync_cursors_status_check', enumCheck(table.syncStatus, DeviceSyncStatusSchema.options)),
+])
+
+// Conflicts requiring manual review — created when the conflict policy
+// resolves to `manual_review`. Branch managers resolve these through the
+// manager-web conflict review queue.
+export const syncConflicts = pgTable('sync_conflicts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  deviceId: uuid('device_id').notNull(),
+  opId: text('op_id').notNull(),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id').notNull(),
+  resolution: text('resolution').notNull().default('manual_review'),
+  serverSnapshot: jsonb('server_snapshot'),
+  clientSnapshot: jsonb('client_snapshot'),
+  message: text('message').notNull(),
+  resolvedByActorId: uuid('resolved_by_actor_id'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('sync_conflicts_organization_id_idx').on(table.organizationId),
+  index('sync_conflicts_device_id_idx').on(table.deviceId),
+  index('sync_conflicts_entity_type_entity_id_idx').on(table.entityType, table.entityId),
+  index('sync_conflicts_resolution_idx').on(table.resolution),
+  check('sync_conflicts_entity_type_check', enumCheck(table.entityType, SyncEntityTypeSchema.options)),
+  check('sync_conflicts_resolution_check', enumCheck(table.resolution, ConflictResolutionSchema.options)),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1121,4 +1223,7 @@ export const restaurantTenantScopedTables = [
   receipts,
   taxComplianceSubmissions,
   notificationPreferences,
+  syncOperations,
+  syncCursors,
+  syncConflicts,
 ] as const
