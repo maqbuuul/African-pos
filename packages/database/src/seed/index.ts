@@ -119,6 +119,17 @@ const SYSTEM_PERMISSIONS = [
   'receipts:resend',
   'receipts:view_status',
   'receipts:configure_preferences', // owner/manager — per-location notification config
+  // P13 — CRM + Loyalty (docs/prd/13-crm-loyalty.md Permissions table).
+  'customers:view',
+  'customers:edit',
+  'customers:merge',
+  'loyalty:redeem',
+  'gift_cards:view',
+  'gift_cards:manage',
+  'gift_cards:redeem',
+  'credit_accounts:charge',
+  'credit_accounts:settle',
+  'reviews:view',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -166,24 +177,35 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'receipts:send',
     'receipts:resend',
     'receipts:view_status',
+    // P13 — CRM: view/edit customers, redeem loyalty, view gift cards, settle credit.
+    'customers:view',
+    'customers:edit',
+    'loyalty:redeem',
+    'gift_cards:view',
+    'gift_cards:redeem',
+    'credit_accounts:settle',
+    'reviews:view',
   ],
   // P7 — cashiers can take mobile money and card in addition to cash.
   // P8 — cashiers can open and close their own shifts.
   // P9 — cashiers can generate and send receipts for their own transactions.
-  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
+  // P13 — cashiers can view/edit customers, redeem loyalty, redeem gift cards.
+  cashier: ['customers:view', 'customers:edit', 'loyalty:redeem', 'gift_cards:view', 'gift_cards:redeem', 'credit_accounts:settle', 'orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
   // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
   // scoped to pre-send by OrdersService's own state check, not a narrower
   // permission (master plan's Waiter Payment Policy doesn't grant waiters
   // any discount capability, so discount_small/_large stay off this list).
   // P7 — waiters can take cash and mobile money (common at table service).
   // P9 — waiters can generate and send receipts for their own tables.
-  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
+  // P13 — waiters can view customers and redeem loyalty at table.
+  waiter: ['customers:view', 'loyalty:redeem', 'orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
   chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
   stock_controller: ['inventory:adjust'],
   // P7 — accountants can reconcile and cancel intents in addition to existing grants.
   // P8 — accountants can view shift P&L as part of reporting.
   // P9 — accountants can view receipt status for reconciliation.
-  accountant: ['reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
+  // P13 — accountants can view customers and reviews.
+  accountant: ['customers:view', 'reviews:view', 'reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
   auditor: ['reports:view_profit'],
 }
 

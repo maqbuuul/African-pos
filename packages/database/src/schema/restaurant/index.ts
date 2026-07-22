@@ -5,9 +5,14 @@ import {
   BillStatusSchema,
   CashAdjustmentDirectionSchema,
   CashDrawerSessionStatusSchema,
-   EntityStatusSchema,
+  CreditAccountStatusSchema,
+  CustomerStatusSchema,
+  EntityStatusSchema,
+  GiftCardStatusSchema,
   KdsTicketItemStatusSchema,
   KdsTicketStatusSchema,
+  LoyaltyEventTypeSchema,
+  LoyaltyTierSchema,
   ModifierStatusSchema,
   NotificationSubjectTypeSchema,
   OrderChannelSchema,
@@ -1091,6 +1096,173 @@ export const notificationPreferences = pgTable('notification_preferences', {
   check('notification_preferences_subject_type_check', enumCheck(table.subjectType, NotificationSubjectTypeSchema.options)),
 ])
 
+// ---------------------------------------------------------------------------
+// P13 — CRM + Loyalty. Unified customer identity, loyalty, gift cards, credit
+// tabs, and feedback/reviews.
+// ---------------------------------------------------------------------------
+export const customers = pgTable('customers', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  phone: text('phone'),
+  email: text('email'),
+  firstName: text('first_name'),
+  lastName: text('last_name'),
+  notes: text('notes'),
+  allergyNotes: text('allergy_notes'),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('customers_organization_id_idx').on(table.organizationId),
+  index('customers_phone_idx').on(table.phone),
+  index('customers_email_idx').on(table.email),
+  check('customers_status_check', enumCheck(table.status, CustomerStatusSchema.options)),
+])
+
+export const customerIdentities = pgTable('customer_identities', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'cascade' }),
+  identityType: text('identity_type').notNull(),
+  identityValue: text('identity_value').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('customer_identities_organization_id_idx').on(table.organizationId),
+  index('customer_identities_customer_id_idx').on(table.customerId),
+  uniqueIndex('customer_identities_type_value_key').on(table.identityType, table.identityValue),
+])
+
+export const customerTags = pgTable('customer_tags', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'cascade' }),
+  tag: text('tag').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('customer_tags_organization_id_idx').on(table.organizationId),
+  index('customer_tags_customer_id_idx').on(table.customerId),
+  unique('customer_tags_customer_id_tag_key').on(table.customerId, table.tag),
+])
+
+export const loyaltyAccounts = pgTable('loyalty_accounts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'cascade' }),
+  tier: text('tier').notNull().default('bronze'),
+  points: integer('points').notNull().default(0),
+  lifetimePoints: integer('lifetime_points').notNull().default(0),
+  ...timestamps,
+}, (table) => [
+  index('loyalty_accounts_organization_id_idx').on(table.organizationId),
+  uniqueIndex('loyalty_accounts_customer_id_key').on(table.customerId),
+  check('loyalty_accounts_tier_check', enumCheck(table.tier, LoyaltyTierSchema.options)),
+])
+
+export const loyaltyEvents = pgTable('loyalty_events', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  loyaltyAccountId: uuid('loyalty_account_id')
+    .notNull()
+    .references(() => loyaltyAccounts.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id'),
+  eventType: text('event_type').notNull(),
+  points: integer('points').notNull(),
+  balanceAfter: integer('balance_after').notNull(),
+  reason: text('reason'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('loyalty_events_organization_id_idx').on(table.organizationId),
+  index('loyalty_events_loyalty_account_id_idx').on(table.loyaltyAccountId),
+  index('loyalty_events_created_at_idx').on(table.createdAt),
+  check('loyalty_events_event_type_check', enumCheck(table.eventType, LoyaltyEventTypeSchema.options)),
+])
+
+export const giftCards = pgTable('gift_cards', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  code: text('code').notNull(),
+  initialBalance: integer('initial_balance').notNull(),
+  currentBalance: integer('current_balance').notNull(),
+  currency: text('currency').notNull(),
+  status: text('status').notNull().default('active'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+  ...timestamps,
+}, (table) => [
+  index('gift_cards_organization_id_idx').on(table.organizationId),
+  uniqueIndex('gift_cards_code_key').on(table.code),
+  check('gift_cards_status_check', enumCheck(table.status, GiftCardStatusSchema.options)),
+])
+
+export const customerCreditAccounts = pgTable('customer_credit_accounts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id')
+    .notNull()
+    .references(() => customers.id, { onDelete: 'cascade' }),
+  creditLimit: integer('credit_limit').notNull().default(0),
+  currentBalance: integer('current_balance').notNull().default(0),
+  currency: text('currency').notNull(),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('customer_credit_accounts_organization_id_idx').on(table.organizationId),
+  uniqueIndex('customer_credit_accounts_customer_id_key').on(table.customerId),
+  check('customer_credit_accounts_status_check', enumCheck(table.status, CreditAccountStatusSchema.options)),
+])
+
+export const customerFeedback = pgTable('customer_feedback', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  customerId: uuid('customer_id'),
+  orderId: uuid('order_id'),
+  orderItemId: uuid('order_item_id'),
+  source: text('source').notNull(),
+  rating: integer('rating'),
+  comment: text('comment'),
+  externalReviewId: text('external_review_id'),
+  sourceUrl: text('source_url'),
+  sentiment: text('sentiment'),
+  isNegative: boolean('is_negative').notNull().default(false),
+  alertSent: boolean('alert_sent').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('customer_feedback_organization_id_idx').on(table.organizationId),
+  index('customer_feedback_location_id_idx').on(table.locationId),
+  index('customer_feedback_customer_id_idx').on(table.customerId),
+  unique('customer_feedback_external_review_id_key').on(table.externalReviewId),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1121,4 +1293,12 @@ export const restaurantTenantScopedTables = [
   receipts,
   taxComplianceSubmissions,
   notificationPreferences,
+  customers,
+  customerIdentities,
+  customerTags,
+  loyaltyAccounts,
+  loyaltyEvents,
+  giftCards,
+  customerCreditAccounts,
+  customerFeedback,
 ] as const

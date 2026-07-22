@@ -461,3 +461,19 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
+// P13 — CRM + Loyalty.
+export const CustomerStatusSchema = z.enum(['active', 'inactive', 'merged'])
+export type CustomerStatus = z.infer<typeof CustomerStatusSchema>
+
+export const LoyaltyTierSchema = z.enum(['bronze', 'silver', 'gold', 'platinum'])
+export type LoyaltyTier = z.infer<typeof LoyaltyTierSchema>
+
+export const LoyaltyEventTypeSchema = z.enum(['earn', 'redeem', 'adjust', 'expire'])
+export type LoyaltyEventType = z.infer<typeof LoyaltyEventTypeSchema>
+
+export const GiftCardStatusSchema = z.enum(['active', 'redeemed', 'expired', 'cancelled'])
+export type GiftCardStatus = z.infer<typeof GiftCardStatusSchema>
+
+export const CreditAccountStatusSchema = z.enum(['active', 'frozen', 'closed'])
+export type CreditAccountStatus = z.infer<typeof CreditAccountStatusSchema>
+
