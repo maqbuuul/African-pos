@@ -461,3 +461,72 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
+// P11 — Inventory, Recipes & Purchasing (BUILD_WORKFLOW.md P12,
+// docs/prd/12-inventory-recipes-purchasing.md, DATA_MODEL.md Inventory group).
+export const StockMovementTypeSchema = z.enum([
+  'receive',
+  'sale',
+  'recipe_deduction',
+  'transfer_out',
+  'transfer_in',
+  'adjustment',
+  'wastage',
+  'return',
+])
+export type StockMovementType = z.infer<typeof StockMovementTypeSchema>
+
+export const PurchaseOrderStatusSchema = z.enum([
+  'draft',
+  'sent',
+  'partially_received',
+  'received',
+  'cancelled',
+])
+export type PurchaseOrderStatus = z.infer<typeof PurchaseOrderStatusSchema>
+
+export const StockCountStatusSchema = z.enum([
+  'open',
+  'submitted',
+  'approved',
+])
+export type StockCountStatus = z.infer<typeof StockCountStatusSchema>
+
+export const InventoryItemTypeSchema = z.enum([
+  'ingredient',
+  'packaging',
+  'supply',
+  'finished_good',
+  'hotel_supply',
+  'other',
+])
+export type InventoryItemType = z.infer<typeof InventoryItemTypeSchema>
+
+export const RecipeStatusSchema = z.enum([
+  'draft',
+  'active',
+  'archived',
+])
+export type RecipeStatus = z.infer<typeof RecipeStatusSchema>
+
+export const UnitOfMeasureSchema = z.enum([
+  'piece',
+  'kg',
+  'g',
+  'lb',
+  'oz',
+  'l',
+  'ml',
+  'cup',
+  'tbsp',
+  'tsp',
+  'dozen',
+  'case',
+  'bag',
+  'box',
+  'bottle',
+  'can',
+  'crate',
+  'portion',
+])
+export type UnitOfMeasure = z.infer<typeof UnitOfMeasureSchema>
+

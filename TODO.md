@@ -294,18 +294,24 @@ sync engine all changed from what earlier scaffolding may assume.
       `POST /receipts/:id/submit-tax`, `POST/GET /notifications/preferences`.
 - [x] Shift open and close — done 2026-07-22 (P8)
 - [x] Basic sales report — done 2026-07-22 (P8 shift report)
-- [ ] POS local SQLite schema
-- [ ] PowerSync project setup and sync rules (download path — ADR 0001)
-- [ ] Offline operation log + upload-queue handler (write path, custom —
-      ADR 0001 decision 6)
+- [ ] POS local SQLite schema (P10 — feature/p10-offline-sync)
+- [ ] PowerSync project setup and sync rules (P10 — feature/p10-offline-sync)
+- [ ] Offline operation log + upload-queue handler (P10 — feature/p10-offline-sync)
 
 ## Phase 2: Restaurant Operations
 
-- [ ] Inventory items
-- [ ] Stock movements
-- [ ] Purchase orders
-- [ ] Recipes
-- [ ] Wastage
+- [x] Inventory items — done 2026-07-23 (P11, 14 tables: suppliers, inventory_items,
+      stock_locations, stock_levels, stock_movements, purchase_orders,
+      purchase_order_items, goods_receipts, stock_counts, stock_adjustments,
+      recipes, recipe_ingredients, wastage_events)
+- [x] Stock movements — done 2026-07-23 (append-only ledger, movement types:
+      receive, sale, recipe_deduction, transfer_out/in, adjustment, wastage, return)
+- [x] Purchase orders — done 2026-07-23 (draft/sent/partially_received/received lifecycle,
+      goods receipt with discrepancy flagging)
+- [x] Recipes — done 2026-07-23 (versioned recipes with effective dating,
+      recipe_ingredients for deduction-quantity snapshot at order time)
+- [x] Wastage — done 2026-07-23 (wastage_events with reason and cost impact,
+      creates stock_movement of type wastage)
 - [ ] Staff attendance
 - [ ] Customer profiles
 - [ ] Loyalty basics

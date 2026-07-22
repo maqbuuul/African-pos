@@ -119,6 +119,13 @@ const SYSTEM_PERMISSIONS = [
   'receipts:resend',
   'receipts:view_status',
   'receipts:configure_preferences', // owner/manager — per-location notification config
+  // P11 — Inventory, Recipes & Purchasing (docs/prd/12-inventory-recipes-purchasing.md Permissions table).
+  'inventory:view',
+  'inventory:receive',
+  'inventory:adjust',
+  'inventory:transfer',
+  'inventory:count',
+  'inventory:approve_adjustment',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -166,6 +173,10 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'receipts:send',
     'receipts:resend',
     'receipts:view_status',
+    // P11 — supervisors can view stock, receive goods, and perform counts.
+    'inventory:view',
+    'inventory:receive',
+    'inventory:count',
   ],
   // P7 — cashiers can take mobile money and card in addition to cash.
   // P8 — cashiers can open and close their own shifts.
@@ -178,8 +189,9 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   // P7 — waiters can take cash and mobile money (common at table service).
   // P9 — waiters can generate and send receipts for their own tables.
   waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
-  chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
-  stock_controller: ['inventory:adjust'],
+  chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station', 'inventory:view'],
+  // P11 — stock_controller gets full inventory permissions except approving adjustments.
+  stock_controller: ['inventory:view', 'inventory:receive', 'inventory:adjust', 'inventory:count', 'inventory:transfer'],
   // P7 — accountants can reconcile and cancel intents in addition to existing grants.
   // P8 — accountants can view shift P&L as part of reporting.
   // P9 — accountants can view receipt status for reconciliation.
