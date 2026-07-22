@@ -121,4 +121,25 @@ export class CrmController {
       limit: limit ? Number(limit) : undefined,
     })
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  @Get('customers/reports/summary')
+  @RequirePermission('customers:view')
+  customerSummary(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.crmService.customerSummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('loyalty/reports/summary')
+  @RequirePermission('customers:view')
+  loyaltySummary(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.crmService.loyaltySummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reviews/reports/summary')
+  @RequirePermission('reviews:view')
+  feedbackSummary(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.crmService.feedbackSummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
 }

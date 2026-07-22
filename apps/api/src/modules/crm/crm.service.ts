@@ -322,4 +322,86 @@ export class CrmService {
       return db.select().from(customerFeedback).where(and(...conditions)).orderBy(customerFeedback.createdAt).limit(query.limit ?? 50)
     })
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async customerSummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      interface CountRow { count: number }
+      const [totalActive, newCustomers] = await Promise.all([
+        db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(customers)
+          .where(and(eq(customers.organizationId, authContext.organizationId), eq(customers.status, 'active'))) as Promise<CountRow[]>,
+        db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(customers)
+          .where(and(eq(customers.organizationId, authContext.organizationId), sql`${customers.createdAt} >= ${from}`, sql`${customers.createdAt} <= ${to}`)) as Promise<CountRow[]>,
+      ])
+      return {
+        from,
+        to,
+        totalActiveCustomers: Number(totalActive[0]?.count ?? 0),
+        newCustomersInPeriod: Number(newCustomers[0]?.count ?? 0),
+      }
+    })
+  }
+
+  async loyaltySummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [accountStats, pointsSummary] = await Promise.all([
+        db
+          .select({
+            totalAccounts: sql<number>`COUNT(*)`,
+            totalPoints: sql<number>`COALESCE(SUM(${loyaltyAccounts.points}), 0)`,
+            avgPoints: sql<number>`COALESCE(AVG(${loyaltyAccounts.points}), 0)`,
+            tierDistribution: sql<string>`${loyaltyAccounts.tier}`,
+            tierCount: sql<number>`COUNT(*)`,
+          })
+          .from(loyaltyAccounts)
+          .where(eq(loyaltyAccounts.organizationId, authContext.organizationId))
+          .groupBy(loyaltyAccounts.tier),
+        db
+          .select({
+            eventType: loyaltyEvents.eventType,
+            totalPoints: sql<number>`SUM(${loyaltyEvents.points})`,
+            eventCount: sql<number>`COUNT(*)`,
+          })
+          .from(loyaltyEvents)
+          .where(and(eq(loyaltyEvents.organizationId, authContext.organizationId), eq(loyaltyEvents.locationId, locationId), sql`${loyaltyEvents.createdAt} >= ${from}`, sql`${loyaltyEvents.createdAt} <= ${to}`))
+          .groupBy(loyaltyEvents.eventType),
+      ])
+      return { from, to, accountStats: accountStats, pointsSummary }
+    })
+  }
+
+  async feedbackSummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          totalReviews: sql<number>`COUNT(*)`,
+          avgRating: sql<number>`COALESCE(AVG(${customerFeedback.rating}), 0)`,
+          negativeCount: sql<number>`COUNT(*) FILTER (WHERE ${customerFeedback.isNegative} = true)`,
+          positiveCount: sql<number>`COUNT(*) FILTER (WHERE ${customerFeedback.isNegative} = false)`,
+          ratingDistribution: sql<string>`${customerFeedback.rating}`,
+          ratingCount: sql<number>`COUNT(*)`,
+        })
+        .from(customerFeedback)
+        .where(and(eq(customerFeedback.organizationId, authContext.organizationId), eq(customerFeedback.locationId, locationId), sql`${customerFeedback.createdAt} >= ${from}`, sql`${customerFeedback.createdAt} <= ${to}`))
+        .groupBy(customerFeedback.rating)
+        .orderBy(customerFeedback.rating)
+      const totalReviews = Number(rows.reduce((sum, r) => sum + Number(r.totalReviews || 0), 0))
+      const negativeCount = Number(rows.reduce((sum, r) => sum + Number(r.negativeCount || 0), 0))
+      return {
+        from,
+        to,
+        totalReviews,
+        avgRating: rows.length > 0 ? Number(rows.reduce((sum, r) => sum + Number(r.avgRating || 0), 0)) / rows.length : 0,
+        negativeCount,
+        negativeRate: totalReviews > 0 ? negativeCount / totalReviews : 0,
+        ratingDistribution: rows.map((r) => ({ rating: r.ratingDistribution, count: Number(r.ratingCount) })),
+      }
+    })
+  }
 }

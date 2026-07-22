@@ -1233,4 +1233,41 @@ export class PaymentsService {
       // a confirmed payment. Silently swallow and let the audit trail stand as-is.
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async paymentMethodMixReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          method: payments.method,
+          totalAmount: sql<number>`COALESCE(SUM(${payments.amount}), 0)`,
+          count: sql<number>`COUNT(*)`,
+          avgAmount: sql<number>`COALESCE(AVG(${payments.amount}), 0)`,
+        })
+        .from(payments)
+        .where(and(eq(payments.organizationId, authContext.organizationId), eq(payments.locationId, locationId), eq(payments.status, 'confirmed'), sql`${payments.paidAt} >= ${from}`, sql`${payments.paidAt} <= ${to}`))
+        .groupBy(payments.method)
+        .orderBy(sql`SUM(${payments.amount}) DESC`)
+      return { from, to, rows }
+    })
+  }
+
+  async refundSummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          method: refunds.method,
+          totalRefunded: sql<number>`COALESCE(SUM(${refunds.amount}), 0)`,
+          count: sql<number>`COUNT(*)`,
+          avgRefund: sql<number>`COALESCE(AVG(${refunds.amount}), 0)`,
+        })
+        .from(refunds)
+        .where(and(eq(refunds.organizationId, authContext.organizationId), eq(refunds.locationId, locationId), eq(refunds.status, 'settled'), sql`${refunds.createdAt} >= ${from}`, sql`${refunds.createdAt} <= ${to}`))
+        .groupBy(refunds.method)
+        .orderBy(sql`SUM(${refunds.amount}) DESC`)
+      return { from, to, rows }
+    })
+  }
 }

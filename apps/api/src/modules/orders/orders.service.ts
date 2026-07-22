@@ -985,4 +985,69 @@ export class OrdersService {
       })
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async dailySalesReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          date: sql<string>`DATE(${orders.closedAt})`,
+          orderCount: sql<number>`COUNT(*)`,
+          totalSales: sql<number>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+          avgTicket: sql<number>`COALESCE(AVG(${orders.totalAmount}), 0)`,
+          voidCount: sql<number>`COUNT(*) FILTER (WHERE ${orders.status} = 'voided')`,
+        })
+        .from(orders)
+        .where(and(eq(orders.organizationId, authContext.organizationId), eq(orders.locationId, locationId), sql`${orders.closedAt} >= ${from}`, sql`${orders.closedAt} <= ${to}`, ne(orders.status, 'draft')))
+        .groupBy(sql`DATE(${orders.closedAt})`)
+        .orderBy(sql`DATE(${orders.closedAt})`)
+      return { from, to, rows }
+    })
+  }
+
+  async topProductsReport(authContext: AuthContext, locationId: string, from: Date, to: Date, limit = 20) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          productId: orderItems.productId,
+          productName: sql<string>`MAX(${orderItems.nameSnapshot})`,
+          quantitySold: sql<number>`SUM(${orderItems.quantity})`,
+          revenue: sql<number>`SUM(${orderItems.totalAmount})`,
+          orderCount: sql<number>`COUNT(DISTINCT ${orderItems.orderId})`,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.id))
+        .where(and(eq(orderItems.organizationId, authContext.organizationId), eq(orders.locationId, locationId), ne(orders.status, 'draft'), sql`${orders.closedAt} >= ${from}`, sql`${orders.closedAt} <= ${to}`))
+        .groupBy(orderItems.productId)
+        .orderBy(sql`SUM(${orderItems.quantity}) DESC`)
+        .limit(limit)
+      return { from, to, rows }
+    })
+  }
+
+  async voidDiscountSummary(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [voidStats, discountStats] = await Promise.all([
+        db
+          .select({
+            count: sql<number>`COUNT(*)`,
+            totalVoided: sql<number>`COALESCE(SUM(${orderItems.totalAmount}), 0)`,
+          })
+          .from(orderItems)
+          .innerJoin(orders, eq(orderItems.orderId, orders.id))
+          .where(and(eq(orderItems.organizationId, authContext.organizationId), eq(orders.locationId, locationId), inArray(orderItems.status, ['voided', 'comped']), sql`${orders.closedAt} >= ${from}`, sql`${orders.closedAt} <= ${to}`)),
+        db
+          .select({
+            totalDiscount: sql<number>`COALESCE(SUM(${orderDiscounts.amountApplied}), 0)`,
+            discountCount: sql<number>`COUNT(*)`,
+          })
+          .from(orderDiscounts)
+          .innerJoin(orders, eq(orderDiscounts.orderId, orders.id))
+          .where(and(eq(orderDiscounts.organizationId, authContext.organizationId), eq(orders.locationId, locationId), sql`${orders.closedAt} >= ${from}`, sql`${orders.closedAt} <= ${to}`)),
+      ])
+      return { from, to, voidedItems: voidStats[0], discounts: discountStats[0] }
+    })
+  }
 }

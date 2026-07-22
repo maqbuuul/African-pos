@@ -1,4 +1,4 @@
-import { Controller, Get, Headers, HttpCode, Inject, Param, Post, Req, UseGuards } from '@nestjs/common'
+import { Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -122,6 +122,19 @@ export class PaymentsController {
     @Req() req: Request,
   ) {
     return this.paymentsService.connectIntegration(req.authContext!, dto)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  @Get('payments/reports/method-mix')
+  paymentMethodMix(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.paymentsService.paymentMethodMixReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('payments/reports/refund-summary')
+  refundSummary(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.paymentsService.refundSummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
   }
 }
 

@@ -93,4 +93,22 @@ export class OrdersController {
   close(@Param('id') id: string, @Req() req: Request) {
     return this.ordersService.close(req.authContext!, id)
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  @Get('reports/daily-sales')
+  dailySales(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.ordersService.dailySalesReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reports/top-products')
+  topProducts(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string, @Query('limit') limit?: string) {
+    return this.ordersService.topProductsReport(req.authContext!, locationId, new Date(from), new Date(to), limit ? Number(limit) : 20)
+  }
+
+  @Get('reports/void-discount')
+  voidDiscount(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.ordersService.voidDiscountSummary(req.authContext!, locationId, new Date(from), new Date(to))
+  }
 }
