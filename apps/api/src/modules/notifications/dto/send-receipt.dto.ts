@@ -1,4 +1,4 @@
-import { IsArray, IsEmail, IsOptional, IsPhoneNumber, IsString } from 'class-validator'
+import { IsArray, IsEmail, IsOptional, IsString } from 'class-validator'
 
 export class SendReceiptDto {
   @IsOptional()

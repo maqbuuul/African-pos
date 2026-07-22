@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Inject,
   Injectable,
   NotFoundException,
@@ -23,7 +22,6 @@ import {
   getMessagingAdapter,
   getTaxAdapter,
   type ReceiptRenderInput,
-  type SendMessageInput,
 } from '@hospitality-os/integrations'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'

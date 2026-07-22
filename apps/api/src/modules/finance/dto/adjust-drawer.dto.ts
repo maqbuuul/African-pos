@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsString, IsUUID, Length, Min } from 'class-validator'
+import { IsIn, IsInt, IsString, Length, Min } from 'class-validator'
 
 export class AdjustDrawerDto {
   @IsIn(['in', 'out'])

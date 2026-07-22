@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common'
 import { Job, Queue, Worker } from 'bullmq'
+import { and, eq } from 'drizzle-orm'
 import type { Pool } from 'pg'
 
 import {
@@ -64,10 +65,7 @@ export class ReceiptWorker {
         .select()
         .from(receiptsTable)
         .where(
-          (() => {
-            const { and, eq } = require('drizzle-orm')
-            return and(eq(receiptsTable.id, receiptId), eq(receiptsTable.organizationId, organizationId))
-          })(),
+          and(eq(receiptsTable.id, receiptId), eq(receiptsTable.organizationId, organizationId)),
         )
 
       if (!receipt) {
@@ -112,10 +110,7 @@ export class ReceiptWorker {
           ...(isDelivered ? { deliveredAt: new Date() } : {}),
         })
         .where(
-          (() => {
-            const { and, eq } = require('drizzle-orm')
-            return and(eq(receiptsTable.id, receiptId), eq(receiptsTable.organizationId, organizationId))
-          })(),
+          and(eq(receiptsTable.id, receiptId), eq(receiptsTable.organizationId, organizationId)),
         )
 
       // Submit to tax authority if Kenya

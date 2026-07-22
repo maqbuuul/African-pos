@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   cashDrawerAdjustments,
@@ -13,7 +13,6 @@ import {
   payments,
   refunds,
   shifts,
-  tips,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -29,22 +28,6 @@ import type { AuthContext } from '../../core/tenant/tenant.types.js'
 import type { AdjustDrawerDto } from './dto/adjust-drawer.dto.js'
 import type { CloseShiftDto } from './dto/close-shift.dto.js'
 import type { OpenShiftDto } from './dto/open-shift.dto.js'
-
-const CASH_METHODS = ['cash'] as const
-const NON_CASH_METHODS = [
-  'mpesa',
-  'airtel_money',
-  'evc_plus',
-  'edahab',
-  'zaad',
-  'card',
-  'bank_transfer',
-  'card_terminal',
-  'loyalty_points',
-  'gift_card',
-  'customer_credit',
-  'external_platform',
-] as const
 
 const VARIANCE_THRESHOLD_KEY = 'cash_variance_threshold'
 
