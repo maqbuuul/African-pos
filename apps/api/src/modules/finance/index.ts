@@ -1,10 +1,14 @@
 import { Module } from '@nestjs/common'
 
+import { ShiftsModule } from './shifts.module.js'
+
 export const financeModule = {
   name: 'finance',
   phase: 'restaurant-operations',
-  owns: ['ledger_entries', 'expenses', 'tax_summaries', 'reconciliations'],
+  owns: ['shifts', 'cash_drawer_sessions', 'cash_drawer_adjustments'],
 } as const
 
-@Module({})
+@Module({
+  imports: [ShiftsModule],
+})
 export class FinanceModule {}

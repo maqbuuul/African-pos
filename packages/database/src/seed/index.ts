@@ -6,6 +6,7 @@ import {
   businesses,
   devices,
   floorPlans,
+  kdsStations,
   locations,
   menuCategories,
   menus,
@@ -83,6 +84,35 @@ const SYSTEM_PERMISSIONS = [
   'orders:void_after_send',
   'orders:comp_item',
   'orders:discount_above_threshold',
+  // P6 — Kitchen / KDS.
+  'kds:view',
+  'kds:manage_stations',
+  'kds:bump_own_station',
+  'kds:bump_any_station',
+  'kds:recall_own_station',
+  'kds:recall_any_station',
+  'kds:view_analytics',
+  // P7 — Payments Core (docs/prd/07-payments.md Permissions table,
+  // master plan section 22's Payments group).
+  // payments:take_cash and payments:refund were pre-existing placeholders
+  // — they are now real, enforced, and mapped to correct roles below.
+  'payments:take_mobile_money',
+  'payments:take_card',
+  'payments:take_bank_transfer', // manager-level — bank transfer fraud vector
+  'payments:split',
+  'payments:cancel',
+  'payments:reconcile',
+  'payments:connect_integration', // owner/branch_manager only — stores encrypted credentials
+  // Approval action key for refunds (ApprovalsController.resolve requires
+  // the resolver to hold this permission literally — same pattern as
+  // orders:void_after_send). payments:refund is already in the list above;
+  // this stays as-is (it doubles as both the RBAC permission and the approval action key).
+  // P8 — Shift + Cash Drawer (docs/prd/08-shift-cash-drawer.md Permissions table).
+  'shifts:open',
+  'shifts:close',
+  'shifts:view_pnl',
+  'shifts:adjust_cash', // approval-gated for supervisor, direct for branch_manager
+  'shifts:reopen',      // branch_manager+ only — rare, audited
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -105,22 +135,39 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'tables:manage',
     'tables:manage_any_section',
     'tables:block',
+    'kds:view',
+    'kds:bump_any_station',
+    'kds:recall_any_station',
     // Master plan section 22: supervisor "Approve small discounts" and
     // "Reassign orders" — void_bill/discount_large stay branch_manager+
     // (master plan names branch_manager, not supervisor, as the
     // void/discount/refund approver).
     'orders:update_any',
     'orders:discount_small',
+    // P7 — supervisors can take mobile money and card, and cancel intents.
+    'payments:take_mobile_money',
+    'payments:take_card',
+    'payments:cancel',
+    // P8 — supervisors can view live P&L and adjust cash drawer (approval-gated).
+    'shifts:open',
+    'shifts:close',
+    'shifts:view_pnl',
+    'shifts:adjust_cash',
   ],
-  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'products:toggle_availability'],
+  // P7 — cashiers can take mobile money and card in addition to cash.
+  // P8 — cashiers can open and close their own shifts.
+  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close'],
   // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
   // scoped to pre-send by OrdersService's own state check, not a narrower
   // permission (master plan's Waiter Payment Policy doesn't grant waiters
   // any discount capability, so discount_small/_large stay off this list).
-  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage'],
-  chef: ['products:toggle_availability'],
+  // P7 — waiters can take cash and mobile money (common at table service).
+  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money'],
+  chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
   stock_controller: ['inventory:adjust'],
-  accountant: ['reports:view_profit', 'payments:refund'],
+  // P7 — accountants can reconcile and cancel intents in addition to existing grants.
+  // P8 — accountants can view shift P&L as part of reporting.
+  accountant: ['reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl'],
   auditor: ['reports:view_profit'],
 }
 
@@ -316,6 +363,7 @@ const seedFloorPlanAndTables = async (
 
 const WAITER_ONE_PIN = '1111'
 const WAITER_TWO_PIN = '2222'
+const CHEF_PIN = '3333'
 
 // Idempotent by staff name, called from both the fresh-org and
 // already-seeded-org paths so a P4 backfill against a database seeded before
@@ -344,6 +392,74 @@ const seedWaiters = async (db: Db, org: { id: string }, location: { id: string }
   return { waiterOne, waiterTwo }
 }
 
+const seedKitchenDemo = async (db: Db, org: { id: string; name: string }, location: { id: string }, chefId: string) => {
+  const [existingStation] = await db.select().from(kdsStations).where(eq(kdsStations.organizationId, org.id))
+  if (existingStation) {
+    console.warn('KDS stations already seeded, skipping.')
+    return
+  }
+
+  await db.insert(kdsStations).values([
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      code: 'hot_kitchen',
+      name: 'Hot Kitchen',
+      assignedStaffId: chefId,
+      expectedPrepTimeSeconds: 900,
+      recallGraceSeconds: 120,
+      sortOrder: 0,
+    },
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      code: 'cold_station',
+      name: 'Cold Station',
+      expectedPrepTimeSeconds: 480,
+      recallGraceSeconds: 120,
+      sortOrder: 1,
+    },
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      code: 'expo',
+      name: 'Expo',
+      isExpo: true,
+      expectedPrepTimeSeconds: 300,
+      recallGraceSeconds: 120,
+      sortOrder: 2,
+    },
+  ])
+
+  console.warn(`Seeded P6 KDS stations for "${org.name}": hot_kitchen, cold_station, expo`)
+}
+
+const seedChef = async (db: Db, org: { id: string }, location: { id: string }, roleIds: Map<string, string>) => {
+  const chefRoleId = roleIds.get('chef')
+  if (!chefRoleId) throw new Error('chef system role missing')
+
+  const [existingChef] = await db.select().from(staff).where(and(eq(staff.organizationId, org.id), eq(staff.name, 'Chef One')))
+  if (existingChef) return existingChef
+
+  const [chef] = await db
+    .insert(staff)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Chef One',
+      pinHash: await hashSecret(CHEF_PIN),
+    })
+    .returning()
+  if (!chef) throw new Error('failed to seed chef staff')
+
+  await db
+    .insert(staffRoles)
+    .values({ organizationId: org.id, staffId: chef.id, roleId: chefRoleId, locationId: location.id })
+    .onConflictDoNothing()
+
+  return chef
+}
+
 const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   const existing = await db.select().from(organizations).where(eq(organizations.name, 'Izzi Brunch and Cake'))
   if (existing[0]) {
@@ -352,7 +468,9 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
     if (location) {
       await seedMenuCatalog(db, existing[0], location)
       const { waiterOne } = await seedWaiters(db, existing[0], location, roleIds)
+      const chef = await seedChef(db, existing[0], location, roleIds)
       await seedFloorPlanAndTables(db, existing[0], location, waiterOne.id)
+      await seedKitchenDemo(db, existing[0], location, chef.id)
     }
     return
   }
@@ -439,14 +557,24 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   // real second waiter to deny against — Waiter One owns T1, Waiter Two owns
   // nothing, both exercisable via BUILD_WORKFLOW.md P4's acceptance gate.
   const { waiterOne } = await seedWaiters(db, org, location, roleIds)
+  const chef = await seedChef(db, org, location, roleIds)
 
-  await db.insert(devices).values({
-    organizationId: org.id,
-    locationId: location.id,
-    name: 'Front Counter POS',
-    deviceType: 'pos',
-    platform: 'android',
-  })
+  await db.insert(devices).values([
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Front Counter POS',
+      deviceType: 'pos',
+      platform: 'android',
+    },
+    {
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Hot Kitchen Screen',
+      deviceType: 'kds',
+      platform: 'web',
+    },
+  ])
 
   await db.insert(tenantSettings).values({
     organizationId: org.id,
@@ -463,9 +591,11 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   console.warn(`  cashier PIN:     ${cashierPin} (location ${location.code})`)
   console.warn(`  waiter one PIN:  ${WAITER_ONE_PIN} (location ${location.code})`)
   console.warn(`  waiter two PIN:  ${WAITER_TWO_PIN} (location ${location.code})`)
+  console.warn(`  chef PIN:        ${CHEF_PIN} (location ${location.code})`)
 
   await seedMenuCatalog(db, org, location)
   await seedFloorPlanAndTables(db, org, location, waiterOne.id)
+  await seedKitchenDemo(db, org, location, chef.id)
 }
 
 const run = async () => {
