@@ -113,6 +113,12 @@ const SYSTEM_PERMISSIONS = [
   'shifts:view_pnl',
   'shifts:adjust_cash', // approval-gated for supervisor, direct for branch_manager
   'shifts:reopen',      // branch_manager+ only — rare, audited
+  // P9 — Receipts + Notifications (docs/prd/09-receipts-notifications.md Permissions table).
+  'receipts:generate',
+  'receipts:send',
+  'receipts:resend',
+  'receipts:view_status',
+  'receipts:configure_preferences', // owner/manager — per-location notification config
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -120,6 +126,9 @@ const SYSTEM_PERMISSIONS = [
 // reasonable starting point, not a final authorization design — they'll grow
 // as more of SYSTEM_PERMISSIONS' owning modules ship.
 const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][]> = {
+  // P9 — owner, regional_manager, branch_manager get all receipt permissions.
+  // cashier gets receipts:generate and receipts:send (own transactions).
+  // receipts:configure_preferences is owner/manager only per PRD 09 permission table.
   owner: [...SYSTEM_PERMISSIONS],
   regional_manager: [...SYSTEM_PERMISSIONS],
   branch_manager: SYSTEM_PERMISSIONS.filter((key) => key !== 'products:approve_large_price_change'),
@@ -153,21 +162,28 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'shifts:close',
     'shifts:view_pnl',
     'shifts:adjust_cash',
+    // P9 — supervisors can send receipts and view delivery status.
+    'receipts:send',
+    'receipts:resend',
+    'receipts:view_status',
   ],
   // P7 — cashiers can take mobile money and card in addition to cash.
   // P8 — cashiers can open and close their own shifts.
-  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close'],
+  // P9 — cashiers can generate and send receipts for their own transactions.
+  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
   // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
   // scoped to pre-send by OrdersService's own state check, not a narrower
   // permission (master plan's Waiter Payment Policy doesn't grant waiters
   // any discount capability, so discount_small/_large stay off this list).
   // P7 — waiters can take cash and mobile money (common at table service).
-  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money'],
+  // P9 — waiters can generate and send receipts for their own tables.
+  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
   chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
   stock_controller: ['inventory:adjust'],
   // P7 — accountants can reconcile and cancel intents in addition to existing grants.
   // P8 — accountants can view shift P&L as part of reporting.
-  accountant: ['reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl'],
+  // P9 — accountants can view receipt status for reconciliation.
+  accountant: ['reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
   auditor: ['reports:view_profit'],
 }
 

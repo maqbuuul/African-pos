@@ -174,6 +174,46 @@ export const computeChangeDenominations = (
   return { breakdown, remainder: remaining }
 }
 
+// P9 — Receipts + Notifications (docs/prd/09-receipts-notifications.md, BUILD_WORKFLOW.md P9).
+// Receipt delivery channels — the method used to deliver the receipt to the customer.
+export const ReceiptChannelSchema = z.enum([
+  'print',
+  'whatsapp',
+  'sms',
+  'email',
+  'pdf',
+])
+export type ReceiptChannel = z.infer<typeof ReceiptChannelSchema>
+
+// Delivery status per channel attempt.
+export const DeliveryStatusSchema = z.enum([
+  'pending',
+  'sent',
+  'delivered',
+  'failed',
+])
+export type DeliveryStatus = z.infer<typeof DeliveryStatusSchema>
+
+// Tax compliance submission status (KRA eTIMS, FIRS, SARS).
+export const TaxSubmissionStatusSchema = z.enum([
+  'queued',
+  'sent',
+  'confirmed',
+  'failed',
+])
+export type TaxSubmissionStatus = z.infer<typeof TaxSubmissionStatusSchema>
+
+export const TaxProviderSchema = z.enum([
+  'kra_etims',
+  'firs',
+  'sars',
+])
+export type TaxProvider = z.infer<typeof TaxProviderSchema>
+
+// Subject type for notification preferences.
+export const NotificationSubjectTypeSchema = z.enum(['staff', 'customer'])
+export type NotificationSubjectType = z.infer<typeof NotificationSubjectTypeSchema>
+
 export const OrderStatusSchema = z.enum([
   'draft',
   'open',

@@ -5,10 +5,12 @@ import {
   BillStatusSchema,
   CashAdjustmentDirectionSchema,
   CashDrawerSessionStatusSchema,
+  DeliveryStatusSchema,
   EntityStatusSchema,
   KdsTicketItemStatusSchema,
   KdsTicketStatusSchema,
   ModifierStatusSchema,
+  NotificationSubjectTypeSchema,
   OrderChannelSchema,
   OrderItemStatusSchema,
   OrderStatusSchema,
@@ -17,10 +19,13 @@ import {
   PaymentProviderSchema,
   PaymentStatusSchema,
   ProductStatusSchema,
+  ReceiptChannelSchema,
   RefundStatusSchema,
   ShiftStatusSchema,
   TableShapeSchema,
   TableStatusSchema,
+  TaxProviderSchema,
+  TaxSubmissionStatusSchema,
 } from '@hospitality-os/domain'
 
 import { devices, locations, organizations, staff } from '../shared/index.js'
@@ -989,8 +994,104 @@ export const cashDrawerAdjustments = pgTable('cash_drawer_adjustments', {
   check('cash_drawer_adjustments_direction_check', enumCheck(table.direction, CashAdjustmentDirectionSchema.options)),
 ])
 
-// Same purpose as shared/index.ts's tenantScopedTables — the migration
-// hand-edit step's checklist, kept next to the tables it describes.
+// ---------------------------------------------------------------------------
+// P9 — Receipts + Notifications (docs/prd/09-receipts-notifications.md,
+// BUILD_WORKFLOW.md P9). Receipt records, delivery tracking, tax compliance
+// submissions, and notification preferences. RLS hand-written in migration.
+// ---------------------------------------------------------------------------
+
+// Receipt record — one per bill, generated when a bill reaches paid status.
+// content is the rendered receipt data (snapshot of items, totals, tax, etc.).
+export const receipts = pgTable('receipts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  orderId: uuid('order_id')
+    .notNull()
+    .references(() => orders.id, { onDelete: 'restrict' }),
+  billId: uuid('bill_id')
+    .notNull()
+    .references(() => bills.id, { onDelete: 'restrict' }),
+  // Human-readable receipt number (e.g. RCP-0001), unique per organization.
+  receiptNumber: text('receipt_number').notNull(),
+  // Snapshot of the rendered receipt JSON (items, prices, tax, payment info).
+  content: jsonb('content').notNull(),
+  // Customer-facing channel preferences — null means no digital channel on file.
+  preferredChannel: text('preferred_channel'),
+  // Delivery status per channel — stored as { "whatsapp": "sent", "email": "failed", ... }
+  deliveryStatus: jsonb('delivery_status').notNull().default({}),
+  // Whether the customer received it (at least one channel delivered).
+  isDelivered: boolean('is_delivered').notNull().default(false),
+  generatedAt: timestamp('generated_at', { withTimezone: true }).notNull().defaultNow(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('receipts_organization_id_idx').on(table.organizationId),
+  index('receipts_location_id_idx').on(table.locationId),
+  index('receipts_order_id_idx').on(table.orderId),
+  index('receipts_bill_id_idx').on(table.billId),
+  unique('receipts_org_receipt_number_key').on(table.organizationId, table.receiptNumber),
+  check('receipts_preferred_channel_check', enumCheck(table.preferredChannel, ReceiptChannelSchema.options)),
+])
+
+// Tax compliance submission — one row per receipt submitted to a country's
+// tax authority. Queued/failed rows drive the offline-sync retry (P11).
+export const taxComplianceSubmissions = pgTable('tax_compliance_submissions', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  receiptId: uuid('receipt_id')
+    .notNull()
+    .references(() => receipts.id, { onDelete: 'restrict' }),
+  country: text('country').notNull(),
+  provider: text('provider').notNull(),
+  submissionStatus: text('submission_status').notNull().default('queued'),
+  providerReference: text('provider_reference'),
+  // Raw request/response payload for debugging and retry.
+  requestPayload: jsonb('request_payload'),
+  responsePayload: jsonb('response_payload'),
+  errorMessage: text('error_message'),
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('tax_compliance_submissions_organization_id_idx').on(table.organizationId),
+  index('tax_compliance_submissions_receipt_id_idx').on(table.receiptId),
+  index('tax_compliance_submissions_status_idx').on(table.submissionStatus),
+  check('tax_compliance_submissions_country_len_check', sql`char_length(${table.country}) = 2`),
+  check('tax_compliance_submissions_provider_check', enumCheck(table.provider, TaxProviderSchema.options)),
+  check('tax_compliance_submissions_status_check', enumCheck(table.submissionStatus, TaxSubmissionStatusSchema.options)),
+])
+
+// Notification preferences — per staff or customer channel/quiet-hours config.
+export const notificationPreferences = pgTable('notification_preferences', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  subjectType: text('subject_type').notNull(),
+  subjectId: uuid('subject_id').notNull(),
+  // Per-notification-type channel preferences e.g. {"receipt": "whatsapp", "report": "email"}
+  channelPreferences: jsonb('channel_preferences').notNull().default({}),
+  quietHoursStart: text('quiet_hours_start'),
+  quietHoursEnd: text('quiet_hours_end'),
+  optedOut: boolean('opted_out').notNull().default(false),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('notification_preferences_organization_id_idx').on(table.organizationId),
+  unique('notification_preferences_subject_key').on(table.subjectType, table.subjectId),
+  check('notification_preferences_subject_type_check', enumCheck(table.subjectType, NotificationSubjectTypeSchema.options)),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1018,4 +1119,7 @@ export const restaurantTenantScopedTables = [
   shifts,
   cashDrawerSessions,
   cashDrawerAdjustments,
+  receipts,
+  taxComplianceSubmissions,
+  notificationPreferences,
 ] as const

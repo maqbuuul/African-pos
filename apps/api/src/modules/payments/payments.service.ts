@@ -23,6 +23,7 @@ import { ApprovalsService } from '../../core/permissions/approvals.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { ReceiptsService } from '../notifications/receipts.service.js'
 import type { TakeBankTransferPaymentDto } from './dto/take-bank-transfer-payment.dto.js'
 import type { TakeCashPaymentDto } from './dto/take-cash-payment.dto.js'
 import type { TakeCardPaymentDto } from './dto/take-card-payment.dto.js'
@@ -60,6 +61,7 @@ export class PaymentsService {
     @Inject(ApprovalsService) private readonly approvalsService: ApprovalsService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+    @Inject(ReceiptsService) private readonly receiptsService: ReceiptsService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -1148,6 +1150,30 @@ export class PaymentsService {
       .update(bills)
       .set({ status: 'paid', paidAt: sql`now()`, updatedAt: sql`now()` })
       .where(eq(bills.id, billId))
+
+    // P9 — Trigger receipt generation when a bill is fully paid.
+    // Receipt generation is best-effort from the settlement flow; failures do
+    // not block the settlement. The receipt worker queue provides retry.
+    if (this.receiptsService) {
+      try {
+        const firstPayment = confirmedPayments[0]
+        const [firstIntent] = firstPayment
+          ? await db.select().from(paymentIntents).where(eq(paymentIntents.id, firstPayment.paymentIntentId))
+          : []
+        const customerPhone = firstIntent?.customerPhone ?? undefined
+        const customerEmail = firstIntent?.customerEmail ?? undefined
+
+        await this.receiptsService.generateForOrder(
+          { actorType: 'staff', actorId: '', organizationId, locationId: bill.locationId },
+          bill.orderId,
+          billId,
+          customerPhone,
+          customerEmail,
+        )
+      } catch {
+        // Settlement must not fail due to receipt generation
+      }
+    }
 
     // Check if every bill on the order is now paid.
     const allOrderBills = await db

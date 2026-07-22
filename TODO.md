@@ -280,11 +280,20 @@ sync engine all changed from what earlier scaffolding may assume.
       9 new permissions seeded across all roles. Verified: 23/23 monorepo typechecks pass, migration
       applied with all 5 tables + RLS confirmed live, API boots with all 12 P7 routes mapped.
 - [x] M-Pesa payment intent flow — done 2026-07-22, see above (P7 work item).
-- [ ] KRA eTIMS receipt compliance (launch-blocking for Kenya — see
-      BUILD_WORKFLOW.md P9 and master plan Module 18)
-- [ ] Receipts
-- [ ] Shift open and close
-- [ ] Basic sales report
+- [x] KRA eTIMS receipt compliance — done 2026-07-23 (BUILD_WORKFLOW.md P9, master plan Module 18):
+      `apps/api/src/modules/notifications/`, `packages/integrations/src/tax/`,
+      `packages/integrations/src/messaging/`,
+      `packages/database/src/migrations/0009_p9_receipts.sql`.
+      Receipt generation triggers on bill settlement (P7 handoff), KRA eTIMS
+      sub adapter, WhatsApp/SMS/Email/print delivery adapters,
+      `receipts`/`tax_compliance_submissions`/`notification_preferences` tables.
+- [x] Receipts — done 2026-07-23 (BUILD_WORKFLOW.md P9): receipt generation,
+      delivery via WhatsApp/SMS/Email/print, BullMQ worker for async delivery
+      with retry, 5 new permissions seeded, `POST /receipts/:billId/generate`,
+      `POST /receipts/:id/send`, `GET /receipts/:id/status`,
+      `POST /receipts/:id/submit-tax`, `POST/GET /notifications/preferences`.
+- [x] Shift open and close — done 2026-07-22 (P8)
+- [x] Basic sales report — done 2026-07-22 (P8 shift report)
 - [ ] POS local SQLite schema
 - [ ] PowerSync project setup and sync rules (download path — ADR 0001)
 - [ ] Offline operation log + upload-queue handler (write path, custom —
