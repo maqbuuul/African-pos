@@ -111,4 +111,14 @@ export class OrdersController {
   voidDiscount(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
     return this.ordersService.voidDiscountSummary(req.authContext!, locationId, new Date(from), new Date(to))
   }
+
+  @Get('reports/bill-revenue')
+  billRevenue(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.ordersService.billRevenueReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reports/bill-payment-status')
+  billPaymentStatus(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.ordersService.billPaymentStatusBreakdown(req.authContext!, locationId, new Date(from), new Date(to))
+  }
 }

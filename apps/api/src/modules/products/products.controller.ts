@@ -74,4 +74,23 @@ export class ProductsController {
   markAvailable(@Param('id') id: string, @Req() req: Request) {
     return this.productsService.markAvailable(req.authContext!, id)
   }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  @Get('reports/price-history')
+  @RequirePermission('products:view_price_history')
+  priceHistoryReport(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.productsService.priceHistoryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reports/unavailable-items')
+  unavailableItems(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.productsService.unavailableItemsReport(req.authContext!, locationId)
+  }
+
+  @Get('reports/category-breakdown')
+  categoryBreakdown(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.productsService.categoryBreakdownReport(req.authContext!, locationId)
+  }
 }

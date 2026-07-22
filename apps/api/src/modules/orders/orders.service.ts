@@ -1050,4 +1050,58 @@ export class OrdersService {
       return { from, to, voidedItems: voidStats[0], discounts: discountStats[0] }
     })
   }
+
+  // ---------------------------------------------------------------------------
+  // Bill reports
+  // ---------------------------------------------------------------------------
+  async billRevenueReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          billStatus: bills.status,
+          count: sql<number>`COUNT(*)`,
+          totalRevenue: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)`,
+          avgRevenue: sql<number>`COALESCE(AVG(${bills.totalAmount}), 0)`,
+          totalDiscount: sql<number>`COALESCE(SUM(${bills.discountAmount}), 0)`,
+          totalTax: sql<number>`COALESCE(SUM(${bills.taxAmount}), 0)`,
+          totalTips: sql<number>`COALESCE(SUM(${bills.tipAmount}), 0)`,
+        })
+        .from(bills)
+        .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), sql`${bills.createdAt} >= ${from}`, sql`${bills.createdAt} <= ${to}`))
+        .groupBy(bills.status)
+        .orderBy(sql`SUM(${bills.totalAmount}) DESC`)
+      return { from, to, rows }
+    })
+  }
+
+  async billPaymentStatusBreakdown(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [paid, open, totals] = await Promise.all([
+        db
+          .select({
+            count: sql<number>`COUNT(*)`,
+            total: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)`,
+          })
+          .from(bills)
+          .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'paid'), sql`${bills.paidAt} >= ${from}`, sql`${bills.paidAt} <= ${to}`)),
+        db
+          .select({
+            count: sql<number>`COUNT(*)`,
+            total: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)`,
+          })
+          .from(bills)
+          .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'open'), eq(bills.createdAt, bills.createdAt))),
+        db
+          .select({
+            totalBills: sql<number>`COUNT(*)`,
+            grandTotal: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)`,
+            paidTotal: sql<number>`COALESCE(SUM(${bills.totalAmount}) FILTER (WHERE ${bills.status} = 'paid'), 0)`,
+            openTotal: sql<number>`COALESCE(SUM(${bills.totalAmount}) FILTER (WHERE ${bills.status} = 'open'), 0)`,
+          })
+          .from(bills)
+          .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), sql`${bills.createdAt} >= ${from}`, sql`${bills.createdAt} <= ${to}`)),
+      ])
+      return { from, to, paid: paid[0], open: open[0], totals: totals[0] }
+    })
+  }
 }
