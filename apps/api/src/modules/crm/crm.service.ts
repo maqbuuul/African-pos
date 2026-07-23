@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   customerCreditAccounts,
@@ -229,6 +229,37 @@ export class CrmService {
     })
   }
 
+  async earnLoyaltyPoints(authContext: AuthContext, accountId: string, points: number, description?: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      if (points <= 0) throw new BadRequestException('points must be positive')
+      const accounts = await db
+        .select()
+        .from(loyaltyAccounts)
+        .where(and(eq(loyaltyAccounts.id, accountId), eq(loyaltyAccounts.organizationId, authContext.organizationId)))
+      if (!accounts.length) throw new NotFoundException('loyalty account not found')
+      const account = accounts[0]!
+      const balanceAfter = account.points + points
+      await db
+        .update(loyaltyAccounts)
+        .set({
+          points: sql`${loyaltyAccounts.points} + ${points}`,
+          lifetimePoints: sql`${loyaltyAccounts.lifetimePoints} + ${points}`,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(loyaltyAccounts.id, accountId))
+      await db.insert(loyaltyEvents).values({
+        organizationId: authContext.organizationId,
+        locationId: authContext.locationId ?? account.organizationId,
+        loyaltyAccountId: accountId,
+        eventType: 'earn',
+        points,
+        balanceAfter,
+        reason: description ?? 'points earned',
+      })
+      return { accountId, pointsEarned: points, totalPoints: account.points + points }
+    })
+  }
+
   // ---------------------------------------------------------------------------
   // Gift cards
   // ---------------------------------------------------------------------------
@@ -257,6 +288,16 @@ export class CrmService {
         .then((r) => r[0])
       if (!card) throw new NotFoundException('gift card not found')
       return card
+    })
+  }
+
+  async listGiftCards(authContext: AuthContext) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      return db
+        .select()
+        .from(giftCards)
+        .where(eq(giftCards.organizationId, authContext.organizationId))
+        .orderBy(desc(giftCards.createdAt))
     })
   }
 
@@ -364,6 +405,27 @@ export class CrmService {
       if (query.locationId) conditions.push(eq(customerFeedback.locationId, query.locationId))
       if (query.isNegative !== undefined) conditions.push(eq(customerFeedback.isNegative, query.isNegative))
       return db.select().from(customerFeedback).where(and(...conditions)).orderBy(customerFeedback.createdAt).limit(query.limit ?? 50)
+    })
+  }
+
+  async createFeedback(authContext: AuthContext, data: { locationId: string; customerId?: string; orderId?: string; rating?: number; comment?: string; source?: string }) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db.insert(customerFeedback).values({
+        organizationId: authContext.organizationId,
+        locationId: data.locationId,
+        customerId: data.customerId ?? null,
+        orderId: data.orderId ?? null,
+        orderItemId: null,
+        source: data.source ?? 'manual',
+        rating: data.rating ?? null,
+        comment: data.comment ?? null,
+        externalReviewId: null,
+        sourceUrl: null,
+        sentiment: null,
+        isNegative: data.rating != null && data.rating <= 2,
+        alertSent: false,
+      }).returning()
+      return rows[0]!
     })
   }
 

@@ -135,6 +135,8 @@ const SYSTEM_PERMISSIONS = [
   'credit_accounts:charge',
   'credit_accounts:settle',
   'reviews:view',
+  'reviews:create',
+  'loyalty:earn',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -210,7 +212,11 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   // P8 — accountants can view shift P&L as part of reporting.
   // P9 — accountants can view receipt status for reconciliation.
   // P13 — accountants can view customers and reviews.
-  accountant: ['customers:view', 'reviews:view', 'reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
+  accountant: ['customers:view',   'reviews:view',
+  'reviews:create',
+  'reports:view_profit',   'payments:refund',
+  'payments:reconcile',
+  'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
   auditor: ['reports:view_profit'],
 }
 

@@ -190,8 +190,8 @@ export class ReceiptsService {
         receiptId: receipt.id,
         receiptContent: receipt.content as Record<string, unknown>,
         taxRegistration: {
-          kraPin: orgData.legalName ? `${orgData.legalName}-PIN` : 'PENDING',
-          etrSerial: 'ETR-SIM-001',
+          kraPin: orgData.taxId ?? orgData.legalName ?? 'PENDING',
+          etrSerial: orgData.taxSerial ?? 'PENDING',
         },
       })
 
@@ -388,8 +388,8 @@ export class ReceiptsService {
     return {
       businessName: data.organization.name,
       businessAddress: data.location.address ?? undefined,
-      kraPin: data.organization.legalName ?? undefined,
-      etrSerial: 'ETR-SIM-001',
+      kraPin: data.organization.taxId ?? data.organization.legalName ?? undefined,
+      etrSerial: data.organization.taxSerial ?? 'PENDING',
       receiptNumber: data.receiptNumber,
       orderNumber: data.order.id.slice(0, 8),
       staffName: undefined,

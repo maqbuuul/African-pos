@@ -782,6 +782,7 @@ export const payments = pgTable('payments', {
   changeGivenAmount: integer('change_given_amount').notNull().default(0),
   idempotencyKey: text('idempotency_key').notNull(),
   paidAt: timestamp('paid_at', { withTimezone: true }).notNull().defaultNow(),
+  reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
   processedByActorId: uuid('processed_by_actor_id'),
   metadata: jsonb('metadata'),
   ...timestamps,
@@ -1505,18 +1506,17 @@ export const stockAdjustments = pgTable('stock_adjustments', {
     .references(() => stockLocations.id, { onDelete: 'restrict' }),
   expectedQuantity: real('expected_quantity').notNull(),
   countedQuantity: real('counted_quantity').notNull(),
-  adjustedQuantity: real('adjusted_quantity').notNull(),
-  unit: text('unit').notNull(),
-  reason: text('reason'),
-  status: text('status').notNull().default('draft'),
+  variance: real('variance').notNull(),
+  reason: text('reason').notNull(),
+  adjustedByActorId: uuid('adjusted_by_actor_id').notNull(),
   approvedByActorId: uuid('approved_by_actor_id'),
   approvedAt: timestamp('approved_at', { withTimezone: true }),
   ...timestamps,
 }, (table) => [
   index('stock_adjustments_organization_id_idx').on(table.organizationId),
   index('stock_adjustments_location_id_idx').on(table.locationId),
-  index('stock_adjustments_stock_count_id_idx').on(table.stockCountId),
-  check('stock_adjustments_status_check', enumCheck(table.status, StockCountStatusSchema.options)),
+  index('stock_adjustments_item_id_idx').on(table.inventoryItemId),
+  index('stock_adjustments_count_id_idx').on(table.stockCountId),
 ])
 
 export const recipes = pgTable('recipes', {
@@ -1530,14 +1530,18 @@ export const recipes = pgTable('recipes', {
   productId: uuid('product_id')
     .notNull()
     .references(() => products.id, { onDelete: 'restrict' }),
-  name: text('name').notNull(),
-  yieldQuantity: real('yield_quantity').notNull().default(1),
-  yieldUnit: text('yield_unit').notNull().default('portion'),
+  name: text('name'),
+  versionNumber: integer('version_number').notNull().default(1),
+  effectiveFrom: timestamp('effective_from', { withTimezone: true }).notNull().defaultNow(),
+  effectiveTo: timestamp('effective_to', { withTimezone: true }),
   status: text('status').notNull().default('active'),
+  notes: text('notes'),
+  createdByActorId: uuid('created_by_actor_id').notNull(),
   ...timestamps,
 }, (table) => [
   index('recipes_organization_id_idx').on(table.organizationId),
   index('recipes_product_id_idx').on(table.productId),
+  unique('recipes_product_version_key').on(table.productId, table.versionNumber),
   check('recipes_status_check', enumCheck(table.status, RecipeStatusSchema.options)),
 ])
 
@@ -1551,11 +1555,38 @@ export const recipeIngredients = pgTable('recipe_ingredients', {
     .references(() => inventoryItems.id, { onDelete: 'restrict' }),
   quantity: real('quantity').notNull(),
   unit: text('unit').notNull(),
-  wastagePct: real('wastage_pct').default(0),
+  notes: text('notes'),
   ...timestamps,
 }, (table) => [
   index('recipe_ingredients_recipe_id_idx').on(table.recipeId),
   index('recipe_ingredients_item_id_idx').on(table.inventoryItemId),
+])
+
+// Wastage events — tracks inventory loss/spoilage separate from stock adjustments.
+export const wastageEvents = pgTable('wastage_events', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  stockLocationId: uuid('stock_location_id')
+    .references(() => stockLocations.id, { onDelete: 'restrict' }),
+  quantity: real('quantity').notNull(),
+  unit: text('unit').notNull(),
+  reason: text('reason').notNull(),
+  costImpact: integer('cost_impact'),
+  recordedByActorId: uuid('recorded_by_actor_id').notNull(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  ...timestamps,
+}, (table) => [
+  index('wastage_events_organization_id_idx').on(table.organizationId),
+  index('wastage_events_location_id_idx').on(table.locationId),
+  index('wastage_events_item_id_idx').on(table.inventoryItemId),
 ])
 
 export const restaurantTenantScopedTables = [
@@ -1608,4 +1639,5 @@ export const restaurantTenantScopedTables = [
   stockAdjustments,
   recipes,
   recipeIngredients,
+  wastageEvents,
 ] as const

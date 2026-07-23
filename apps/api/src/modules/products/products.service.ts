@@ -359,6 +359,18 @@ export class ProductsService {
     return updated
   }
 
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(products)
+        .where(and(eq(products.id, id), eq(products.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('product not found')
+
+      await db.delete(products).where(eq(products.id, id))
+    })
+  }
+
   private async loadProduct(db: Db, organizationId: string, id: string) {
     const [product] = await db.select().from(products).where(and(eq(products.id, id), eq(products.organizationId, organizationId)))
     if (!product) throw new NotFoundException('product not found')

@@ -86,6 +86,12 @@ export class CrmController {
     return this.crmService.redeemLoyaltyPoints(req.authContext!, id, points)
   }
 
+  @Post('loyalty/accounts/:accountId/earn')
+  @RequirePermission('loyalty:earn')
+  earnLoyaltyPoints(@Param('accountId') accountId: string, @Body() body: { points: number; description?: string }, @Req() req: Request) {
+    return this.crmService.earnLoyaltyPoints(req.authContext!, accountId, body.points, body.description)
+  }
+
   // ---- Gift cards ----
   @Post('gift-cards')
   @HttpCode(201)
@@ -98,6 +104,12 @@ export class CrmController {
   @RequirePermission('gift_cards:view')
   getGiftCard(@Req() req: Request, @Param('code') code: string) {
     return this.crmService.getGiftCard(req.authContext!, code)
+  }
+
+  @Get('gift-cards')
+  @RequirePermission('gift_cards:view')
+  listGiftCards(@Req() req: Request) {
+    return this.crmService.listGiftCards(req.authContext!)
   }
 
   @Post('gift-cards/:code/redeem')
@@ -144,6 +156,12 @@ export class CrmController {
       isNegative: isNegative ? isNegative === 'true' : undefined,
       limit: limit ? Number(limit) : undefined,
     })
+  }
+
+  @Post('reviews')
+  @RequirePermission('reviews:create')
+  createFeedback(@Body() body: { locationId: string; customerId?: string; orderId?: string; rating?: number; comment?: string; source?: string }, @Req() req: Request) {
+    return this.crmService.createFeedback(req.authContext!, body)
   }
 
   // ---------------------------------------------------------------------------

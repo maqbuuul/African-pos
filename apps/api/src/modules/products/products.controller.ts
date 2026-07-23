@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -73,6 +73,13 @@ export class ProductsController {
   @RequirePermission('products:toggle_availability')
   markAvailable(@Param('id') id: string, @Req() req: Request) {
     return this.productsService.markAvailable(req.authContext!, id)
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermission('products:manage')
+  delete(@Param('id') id: string, @Req() req: Request) {
+    return this.productsService.delete(req.authContext!, id)
   }
 
   // ---------------------------------------------------------------------------

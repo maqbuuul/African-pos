@@ -353,6 +353,18 @@ export class TablesService {
     return row.updated
   }
 
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(restaurantTables)
+        .where(and(eq(restaurantTables.id, id), eq(restaurantTables.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('table not found')
+
+      await db.delete(restaurantTables).where(eq(restaurantTables.id, id))
+    })
+  }
+
   private async loadTable(db: Db, organizationId: string, id: string) {
     const [table] = await db
       .select()

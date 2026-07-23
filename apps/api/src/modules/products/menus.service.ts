@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import { menus, withTenantContext } from '@hospitality-os/database'
@@ -52,5 +52,46 @@ export class MenusService {
     })
 
     return row
+  }
+
+  async getById(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [menu] = await db
+        .select()
+        .from(menus)
+        .where(and(eq(menus.id, id), eq(menus.organizationId, authContext.organizationId)))
+      if (!menu) throw new NotFoundException('menu not found')
+      return menu
+    })
+  }
+
+  async update(authContext: AuthContext, id: string, data: any) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(menus)
+        .where(and(eq(menus.id, id), eq(menus.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('menu not found')
+
+      const [updated] = await db
+        .update(menus)
+        .set({ ...data })
+        .where(and(eq(menus.id, id), eq(menus.organizationId, authContext.organizationId)))
+        .returning()
+      if (!updated) throw new Error('failed to update menu')
+      return updated
+    })
+  }
+
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(menus)
+        .where(and(eq(menus.id, id), eq(menus.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('menu not found')
+
+      await db.delete(menus).where(eq(menus.id, id))
+    })
   }
 }

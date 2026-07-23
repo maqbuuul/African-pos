@@ -127,6 +127,21 @@ export class PaymentsController {
   // ---------------------------------------------------------------------------
   // Reports
   // ---------------------------------------------------------------------------
+  // GET /api/v1/payments/unreconciled
+  @Get('payments/unreconciled')
+  @RequirePermission('payments:reconcile')
+  listUnreconciled(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.paymentsService.listUnreconciled(req.authContext!, locationId)
+  }
+
+  // POST /api/v1/payments/:id/reconcile
+  @Post('payments/:id/reconcile')
+  @HttpCode(200)
+  @RequirePermission('payments:reconcile')
+  reconcilePayment(@Param('id') id: string, @Req() req: Request) {
+    return this.paymentsService.reconcilePayment(req.authContext!, id)
+  }
+
   @Get('payments/reports/method-mix')
   paymentMethodMix(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
     return this.paymentsService.paymentMethodMixReport(req.authContext!, locationId, new Date(from), new Date(to))

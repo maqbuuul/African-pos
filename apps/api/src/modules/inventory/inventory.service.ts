@@ -324,6 +324,7 @@ export class InventoryService {
       const versionNumber = existingRows.length ? existingRows[0]!.versionNumber + 1 : 1
       const rs = await db.insert(recipes).values({
         organizationId: auth.organizationId,
+        locationId: auth.locationId ?? auth.organizationId,
         productId: dto.productId,
         versionNumber,
         notes: dto.notes ?? null,

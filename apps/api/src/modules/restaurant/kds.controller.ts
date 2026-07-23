@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -32,6 +32,18 @@ export class KdsController {
     @Req() req: Request,
   ) {
     return this.kdsService.updateStation(req.authContext!, stationId, dto)
+  }
+
+  @Get('stations/:stationId')
+  getStationById(@Param('stationId') stationId: string, @Req() req: Request) {
+    return this.kdsService.getStationById(req.authContext!, stationId)
+  }
+
+  @Delete('stations/:stationId')
+  @HttpCode(204)
+  @RequirePermission('kds:manage_stations')
+  deleteStation(@Param('stationId') stationId: string, @Req() req: Request) {
+    return this.kdsService.deleteStation(req.authContext!, stationId)
   }
 
   @Get('stations/:stationId/tickets')

@@ -23,6 +23,8 @@ export const organizations = pgTable('organizations', {
   country: text('country').notNull(),
   defaultCurrency: text('default_currency').notNull(),
   timezone: text('timezone').notNull(),
+  taxId: text('tax_id'),
+  taxSerial: text('tax_serial'),
   status: text('status').notNull().default('active'),
   ...timestamps,
 }, (table) => [

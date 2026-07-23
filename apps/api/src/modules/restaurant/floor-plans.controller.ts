@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -28,5 +28,17 @@ export class FloorPlansController {
   @RequirePermission('tables:edit_layout')
   update(@Param('id') id: string, @ValidatedBody(UpdateFloorPlanDto) dto: UpdateFloorPlanDto, @Req() req: Request) {
     return this.floorPlansService.update(req.authContext!, id, dto)
+  }
+
+  @Get(':id')
+  getById(@Param('id') id: string, @Req() req: Request) {
+    return this.floorPlansService.getById(req.authContext!, id)
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermission('tables:edit_layout')
+  delete(@Param('id') id: string, @Req() req: Request) {
+    return this.floorPlansService.delete(req.authContext!, id)
   }
 }

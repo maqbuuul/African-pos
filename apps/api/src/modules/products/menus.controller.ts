@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -21,5 +21,23 @@ export class MenusController {
   @RequirePermission('products:manage')
   create(@ValidatedBody(CreateMenuDto) dto: CreateMenuDto, @Req() req: Request) {
     return this.menusService.create(req.authContext!, dto)
+  }
+
+  @Get(':id')
+  getById(@Param('id') id: string, @Req() req: Request) {
+    return this.menusService.getById(req.authContext!, id)
+  }
+
+  @Patch(':id')
+  @RequirePermission('products:manage')
+  update(@Param('id') id: string, @Body() body: any, @Req() req: Request) {
+    return this.menusService.update(req.authContext!, id, body)
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermission('products:manage')
+  delete(@Param('id') id: string, @Req() req: Request) {
+    return this.menusService.delete(req.authContext!, id)
   }
 }
