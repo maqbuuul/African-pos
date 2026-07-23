@@ -16,6 +16,7 @@ import { restaurantModule, RestaurantModule } from './restaurant/index.js'
 import { retailModule, RetailModule } from './retail/index.js'
 import { staffModule, StaffModule } from './staff/index.js'
 import { syncModule, SyncModule } from './sync/index.js'
+import { tableSessionsModule, TableSessionsModule } from './table-sessions/index.js'
 
 const plannedModules = [
   auditModule,
@@ -34,6 +35,7 @@ const plannedModules = [
   retailModule,
   staffModule,
   syncModule,
+  tableSessionsModule,
 ] as const
 
 @Controller('api/v1/modules')
@@ -65,6 +67,7 @@ class ModulesController {
     RetailModule,
     StaffModule,
     SyncModule,
+    TableSessionsModule,
   ],
   controllers: [ModulesController],
 })

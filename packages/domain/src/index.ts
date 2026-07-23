@@ -461,3 +461,6 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
+export const TableSessionSourceSchema = z.enum(['qr_scan', 'staff_assign'])
+export type TableSessionSource = z.infer<typeof TableSessionSourceSchema>
+

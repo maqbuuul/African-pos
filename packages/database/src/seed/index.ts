@@ -360,8 +360,9 @@ const seedFloorPlanAndTables = async (
       section: 'patio',
       capacity: 4,
       assignedStaffId: waiterOneId,
+      qrSlug: 'table-t1',
     },
-    { organizationId: org.id, locationId: location.id, floorPlanId: floorPlan.id, label: 'T2', section: 'patio', capacity: 2 },
+    { organizationId: org.id, locationId: location.id, floorPlanId: floorPlan.id, label: 'T2', section: 'patio', capacity: 2, qrSlug: 'table-t2' },
     {
       organizationId: org.id,
       locationId: location.id,
@@ -375,6 +376,18 @@ const seedFloorPlanAndTables = async (
   ])
 
   console.warn(`Seeded P4 floor plan for "${org.name}": ${floorPlan.name} (${floorPlan.id}), tables T1-T3`)
+}
+
+const seedTableQrSlugs = async (db: Db, org: { id: string }) => {
+  await db
+    .update(restaurantTables)
+    .set({ qrSlug: 'table-t1' })
+    .where(and(eq(restaurantTables.organizationId, org.id), eq(restaurantTables.label, 'T1'), isNull(restaurantTables.qrSlug)))
+  await db
+    .update(restaurantTables)
+    .set({ qrSlug: 'table-t2' })
+    .where(and(eq(restaurantTables.organizationId, org.id), eq(restaurantTables.label, 'T2'), isNull(restaurantTables.qrSlug)))
+  console.warn('Backfilled QR slugs for T1, T2')
 }
 
 const WAITER_ONE_PIN = '1111'
@@ -486,6 +499,7 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
       const { waiterOne } = await seedWaiters(db, existing[0], location, roleIds)
       const chef = await seedChef(db, existing[0], location, roleIds)
       await seedFloorPlanAndTables(db, existing[0], location, waiterOne.id)
+      await seedTableQrSlugs(db, existing[0])
       await seedKitchenDemo(db, existing[0], location, chef.id)
     }
     return
@@ -611,6 +625,7 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
 
   await seedMenuCatalog(db, org, location)
   await seedFloorPlanAndTables(db, org, location, waiterOne.id)
+  await seedTableQrSlugs(db, org)
   await seedKitchenDemo(db, org, location, chef.id)
 }
 
