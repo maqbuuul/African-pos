@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
@@ -225,17 +225,6 @@ export class InventoryService {
           movedByActorId: auth.actorId,
           movedAt: now,
         })
-        await db.insert(stockLevels).values({
-          organizationId: auth.organizationId,
-          locationId: po.locationId,
-          inventoryItemId: item.inventoryItemId,
-          stockLocationId,
-          quantity: receivedQty,
-          unit: item.unit,
-        }).onConflictDoUpdate({
-          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-          set: { quantity: sql`${stockLevels.quantity} + ${receivedQty}`, updatedAt: now },
-        })
       }
 
       await db.insert(goodsReceipts).values({
@@ -294,8 +283,39 @@ export class InventoryService {
         }
       }
 
-      const updatedRows = await db.update(stockCounts).set({ status: 'completed', approvedByActorId: auth.actorId, approvedAt: new Date() }).where(eq(stockCounts.id, id)).returning()
+      const updatedRows = await db.update(stockCounts).set({ status: 'submitted' }).where(eq(stockCounts.id, id)).returning()
       return updatedRows[0]
+    })
+  }
+
+  async approveStockCount(auth: AuthContext, id: string) {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const scRows = await db.select().from(stockCounts).where(and(eq(stockCounts.id, id), eq(stockCounts.organizationId, auth.organizationId)))
+      if (!scRows.length) throw new NotFoundException('stock count not found')
+      const sc = scRows[0]!
+      if (sc.status !== 'submitted') throw new BadRequestException('stock count must be in submitted status for approval')
+
+      const adjustments = await db.select().from(stockAdjustments).where(eq(stockAdjustments.stockCountId, id))
+
+      for (const adj of adjustments) {
+        await db.insert(stockMovements).values({
+          organizationId: auth.organizationId,
+          locationId: sc.locationId,
+          inventoryItemId: adj.inventoryItemId,
+          stockLocationId: adj.stockLocationId,
+          movementType: 'adjustment',
+          quantity: adj.variance,
+          unit: 'piece',
+          reason: adj.reason,
+          referenceType: 'stock_count',
+          referenceId: id,
+          movedByActorId: auth.actorId,
+        })
+        await db.update(stockAdjustments).set({ approvedByActorId: auth.actorId, approvedAt: new Date() }).where(eq(stockAdjustments.id, adj.id))
+      }
+
+      const updatedRows = await db.update(stockCounts).set({ status: 'approved', approvedByActorId: auth.actorId, approvedAt: new Date() }).where(eq(stockCounts.id, id)).returning()
+      return { ...updatedRows[0], adjustmentsApproved: adjustments.length }
     })
   }
 
@@ -376,18 +396,6 @@ export class InventoryService {
         unit: dto.unit,
         reason: dto.reason,
         movedByActorId: auth.actorId,
-      })
-
-      await db.insert(stockLevels).values({
-        organizationId: auth.organizationId,
-        locationId: auth.locationId ?? '',
-        inventoryItemId: dto.inventoryItemId,
-        stockLocationId: dto.stockLocationId,
-        quantity: -Math.abs(dto.quantity),
-        unit: dto.unit,
-      }).onConflictDoUpdate({
-        target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-        set: { quantity: sql`${stockLevels.quantity} - ${Math.abs(dto.quantity)}`, updatedAt: new Date() },
       })
 
       return evts[0]

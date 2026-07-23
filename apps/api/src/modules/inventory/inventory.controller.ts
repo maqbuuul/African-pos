@@ -57,6 +57,9 @@ export class InventoryController {
   @Post('stock-counts/:id/complete') @HttpCode(200) completeStockCount(@Param('id') id: string, @Req() req: Request) {
     return this.svc.completeStockCount(req.authContext!, id)
   }
+  @Post('stock-counts/:id/approve') @HttpCode(200) approveStockCount(@Param('id') id: string, @Req() req: Request) {
+    return this.svc.approveStockCount(req.authContext!, id)
+  }
 
   // -- Recipes --
   @Get('recipes') listRecipes(@Req() req: Request) { return this.svc.listRecipes(req.authContext!) }
