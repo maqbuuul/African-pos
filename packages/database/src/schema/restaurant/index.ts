@@ -1123,7 +1123,8 @@ export const staffNotifications = pgTable('staff_notifications', {
   check('staff_notifications_status_check', enumCheck(table.status, ['pending', 'acknowledged', 'completed', 'cancelled'])),
 ])
 
-// Customer feedback — ratings and comments on order items.
+// Customer feedback — ratings, comments, reviews, sentiment analysis.
+// Schema aligns with P13 CRM module (the canonical owner of this table).
 export const customerFeedback = pgTable('customer_feedback', {
   ...primaryId,
   organizationId: uuid('organization_id')
@@ -1132,20 +1133,24 @@ export const customerFeedback = pgTable('customer_feedback', {
   locationId: uuid('location_id')
     .notNull()
     .references(() => locations.id, { onDelete: 'restrict' }),
-  orderItemId: uuid('order_item_id')
-    .notNull()
-    .references(() => orderItems.id, { onDelete: 'restrict' }),
-  productId: uuid('product_id')
-    .notNull()
-    .references(() => products.id, { onDelete: 'restrict' }),
-  rating: integer('rating').notNull(),
+  customerId: uuid('customer_id'),
+  orderId: uuid('order_id'),
+  orderItemId: uuid('order_item_id'),
+  source: text('source').notNull().default('qr_table'),
+  rating: integer('rating'),
   comment: text('comment'),
+  externalReviewId: text('external_review_id'),
+  sourceUrl: text('source_url'),
+  sentiment: text('sentiment'),
+  isNegative: boolean('is_negative').notNull().default(false),
+  alertSent: boolean('alert_sent').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('customer_feedback_organization_id_idx').on(table.organizationId),
+  index('customer_feedback_location_id_idx').on(table.locationId),
+  index('customer_feedback_customer_id_idx').on(table.customerId),
   index('customer_feedback_order_item_id_idx').on(table.orderItemId),
-  index('customer_feedback_product_id_idx').on(table.productId),
-  check('customer_feedback_rating_check', sql`${table.rating} >= 1 AND ${table.rating} <= 5`),
+  unique('customer_feedback_external_review_id_key').on(table.externalReviewId),
 ])
 
 export const restaurantTenantScopedTables = [

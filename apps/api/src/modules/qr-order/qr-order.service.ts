@@ -197,7 +197,7 @@ export class QrOrderService {
     }
     return withTenantContext(this.pool, session.organizationId, async (db) => {
       const [item] = await db
-        .select({ productId: orderItems.productId })
+        .select({ id: orderItems.id })
         .from(orderItems)
         .where(and(eq(orderItems.id, orderItemId), eq(orderItems.organizationId, session.organizationId)))
         .limit(1)
@@ -207,8 +207,9 @@ export class QrOrderService {
         organizationId: session.organizationId,
         locationId: session.locationId,
         orderItemId,
-        productId: item.productId,
+        source: 'qr_table',
         rating,
+        isNegative: rating < 3,
         comment: comment ?? null,
       }).returning()
       return { orderItemId, rating, comment: comment ?? null, message: 'feedback recorded', feedback }
