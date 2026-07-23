@@ -480,6 +480,9 @@ importers:
 
   packages/offline-sync:
     dependencies:
+      '@hospitality-os/domain':
+        specifier: workspace:*
+        version: link:../domain
       zod:
         specifier: ^3.24.1
         version: 3.25.76

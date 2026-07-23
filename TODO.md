@@ -294,10 +294,16 @@ sync engine all changed from what earlier scaffolding may assume.
       `POST /receipts/:id/submit-tax`, `POST/GET /notifications/preferences`.
 - [x] Shift open and close — done 2026-07-22 (P8)
 - [x] Basic sales report — done 2026-07-22 (P8 shift report)
-- [ ] POS local SQLite schema
-- [ ] PowerSync project setup and sync rules (download path — ADR 0001)
-- [ ] Offline operation log + upload-queue handler (write path, custom —
-      ADR 0001 decision 6)
+- [x] POS local SQLite schema — done 2026-07-23 (device-schema.ts, downloaded-table mirrors)
+- [x] PowerSync project setup and sync rules (download path — ADR 0001) —
+      done 2026-07-23 (packages/offline-sync/powersync.yaml, 4 buckets:
+      catalog, staff_and_permissions, active_orders, tenant_settings)
+- [x] Offline operation log + upload-queue handler (write path, custom —
+      ADR 0001 decision 6): done 2026-07-23
+      (packages/offline-sync: OperationLogBuilder, ConflictPolicyEngine,
+       SyncTokenPayload; apps/api: SyncModule, POST /sync/push,
+       sync_operations/sync_cursors/sync_conflicts tables; apps/pos-mobile:
+       SyncClient, UploadHandler, sync status indicator in App.tsx)
 
 ## Phase 2: Restaurant Operations
 

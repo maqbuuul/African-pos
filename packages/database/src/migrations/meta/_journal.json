@@ -92,6 +92,13 @@
       "when": 1785350000000,
       "tag": "0012_p10_staff_notifications_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785400000000,
+      "tag": "0013_p11_offline_sync",
+      "breakpoints": true
     }
   ]
 }
