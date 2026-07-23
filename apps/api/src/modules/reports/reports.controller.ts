@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Post, Query, Req, Res, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, Inject, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common'
 import type { Request, Response } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -52,7 +52,7 @@ export class ReportsController {
 
   @Get('reports/payments')
   paymentsReport(@Req() req: Request, @Query('locationId') locationId: string, @Query('days') days?: string) {
-    return this.reportsService.salesDashboard(req.authContext!, locationId, days ? Number(days) : 7)
+    return this.reportsService.paymentsReport(req.authContext!, locationId, days ? Number(days) : 7)
   }
 
   @Get('reports/inventory')
@@ -74,9 +74,16 @@ export class ReportsController {
   // Export
   // ---------------------------------------------------------------------------
   @Post('reports/:type/export')
-  exportReport(@Req() req: Request, @Res() res: Response) {
+  async exportReport(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('locationId') locationId: string,
+    @Param('type') type: string,
+    @Body() body: { days?: number; startDate?: string; endDate?: string },
+  ) {
+    const { csv, filename } = await this.reportsService.exportReport(req.authContext!, locationId, type, body)
     res.setHeader('Content-Type', 'text/csv')
-    res.setHeader('Content-Disposition', 'attachment; filename="report.csv"')
-    res.send('report_type,exported,true\n')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(csv)
   }
 }

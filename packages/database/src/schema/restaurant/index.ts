@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { boolean, check, index, integer, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, check, index, integer, jsonb, pgTable, real, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import {
   BillSplitMethodSchema,
   BillStatusSchema,
@@ -9,6 +9,7 @@ import {
   CustomerStatusSchema,
   EntityStatusSchema,
   GiftCardStatusSchema,
+  InventoryItemTypeSchema,
   KdsTicketItemStatusSchema,
   KdsTicketStatusSchema,
   LoyaltyEventTypeSchema,
@@ -23,13 +24,18 @@ import {
   PaymentProviderSchema,
   PaymentStatusSchema,
   ProductStatusSchema,
+  PurchaseOrderStatusSchema,
   ReceiptChannelSchema,
+  RecipeStatusSchema,
   RefundStatusSchema,
   ShiftStatusSchema,
+  StockCountStatusSchema,
+  StockMovementTypeSchema,
   TableShapeSchema,
   TableStatusSchema,
   TaxProviderSchema,
   TaxSubmissionStatusSchema,
+  UnitOfMeasureSchema,
 } from '@hospitality-os/domain'
 
 import { devices, locations, organizations, staff } from '../shared/index.js'
@@ -1263,6 +1269,295 @@ export const customerFeedback = pgTable('customer_feedback', {
   unique('customer_feedback_external_review_id_key').on(table.externalReviewId),
 ])
 
+// ---------------------------------------------------------------------------
+// P12 — Inventory, Recipes & Purchasing
+// ---------------------------------------------------------------------------
+
+export const suppliers = pgTable('suppliers', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  contactPerson: text('contact_person'),
+  phone: text('phone'),
+  email: text('email'),
+  address: text('address'),
+  paymentTerms: text('payment_terms'),
+  creditLimit: integer('credit_limit'),
+  currency: text('currency').notNull().default('KES'),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('suppliers_organization_id_idx').on(table.organizationId),
+  index('suppliers_location_id_idx').on(table.locationId),
+])
+
+export const inventoryItems = pgTable('inventory_items', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  itemType: text('item_type').notNull().default('ingredient'),
+  sku: text('sku'),
+  barcode: text('barcode'),
+  unit: text('unit').notNull(),
+  category: text('category'),
+  preferredSupplierId: uuid('preferred_supplier_id'),
+  reorderPoint: integer('reorder_point'),
+  reorderQuantity: integer('reorder_quantity'),
+  unitCost: integer('unit_cost'),
+  currency: text('currency').notNull().default('KES'),
+  trackStock: boolean('track_stock').notNull().default(true),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('inventory_items_organization_id_idx').on(table.organizationId),
+  index('inventory_items_location_id_idx').on(table.locationId),
+  index('inventory_items_sku_idx').on(table.sku),
+  check('inventory_items_item_type_check', enumCheck(table.itemType, InventoryItemTypeSchema.options)),
+  check('inventory_items_unit_check', enumCheck(table.unit, UnitOfMeasureSchema.options)),
+])
+
+export const stockLocations = pgTable('stock_locations', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  description: text('description'),
+  ...timestamps,
+}, (table) => [
+  index('stock_locations_organization_id_idx').on(table.organizationId),
+  index('stock_locations_location_id_idx').on(table.locationId),
+])
+
+export const stockLevels = pgTable('stock_levels', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  stockLocationId: uuid('stock_location_id')
+    .references(() => stockLocations.id, { onDelete: 'restrict' }),
+  quantity: real('quantity').notNull().default(0),
+  unit: text('unit').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('stock_levels_organization_id_idx').on(table.organizationId),
+  index('stock_levels_item_location_idx').on(table.inventoryItemId, table.stockLocationId),
+  unique('stock_levels_item_stock_loc_key').on(table.inventoryItemId, table.stockLocationId),
+])
+
+export const stockMovements = pgTable('stock_movements', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  stockLocationId: uuid('stock_location_id')
+    .references(() => stockLocations.id, { onDelete: 'restrict' }),
+  movementType: text('movement_type').notNull(),
+  quantity: real('quantity').notNull(),
+  unit: text('unit').notNull(),
+  unitCost: integer('unit_cost'),
+  referenceType: text('reference_type'),
+  referenceId: text('reference_id'),
+  reason: text('reason'),
+  transferReferenceId: text('transfer_reference_id'),
+  movedByActorId: uuid('moved_by_actor_id').notNull(),
+  movedAt: timestamp('moved_at', { withTimezone: true }).notNull().defaultNow(),
+  ...timestamps,
+}, (table) => [
+  index('stock_movements_organization_id_idx').on(table.organizationId),
+  index('stock_movements_location_id_idx').on(table.locationId),
+  index('stock_movements_item_id_idx').on(table.inventoryItemId),
+  index('stock_movements_reference_idx').on(table.referenceType, table.referenceId),
+  index('stock_movements_moved_at_idx').on(table.movedAt),
+  check('stock_movements_movement_type_check', enumCheck(table.movementType, StockMovementTypeSchema.options)),
+])
+
+export const purchaseOrders = pgTable('purchase_orders', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  supplierId: uuid('supplier_id')
+    .notNull()
+    .references(() => suppliers.id, { onDelete: 'restrict' }),
+  orderNumber: text('order_number').notNull(),
+  status: text('status').notNull().default('draft'),
+  expectedDeliveryDate: timestamp('expected_delivery_date', { withTimezone: true }),
+  notes: text('notes'),
+  totalAmount: integer('total_amount').default(0),
+  currency: text('currency').notNull().default('KES'),
+  createdByActorId: uuid('created_by_actor_id').notNull(),
+  approvedByActorId: uuid('approved_by_actor_id'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('purchase_orders_organization_id_idx').on(table.organizationId),
+  index('purchase_orders_location_id_idx').on(table.locationId),
+  index('purchase_orders_supplier_id_idx').on(table.supplierId),
+  unique('purchase_orders_org_order_number_key').on(table.organizationId, table.orderNumber),
+  check('purchase_orders_status_check', enumCheck(table.status, PurchaseOrderStatusSchema.options)),
+])
+
+export const purchaseOrderItems = pgTable('purchase_order_items', {
+  ...primaryId,
+  purchaseOrderId: uuid('purchase_order_id')
+    .notNull()
+    .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  orderedQuantity: real('ordered_quantity').notNull(),
+  receivedQuantity: real('received_quantity').notNull().default(0),
+  unit: text('unit').notNull(),
+  expectedUnitCost: integer('expected_unit_cost'),
+  actualUnitCost: integer('actual_unit_cost'),
+  ...timestamps,
+}, (table) => [
+  index('purchase_order_items_po_id_idx').on(table.purchaseOrderId),
+  index('purchase_order_items_item_id_idx').on(table.inventoryItemId),
+])
+
+export const goodsReceipts = pgTable('goods_receipts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  purchaseOrderId: uuid('purchase_order_id')
+    .notNull()
+    .references(() => purchaseOrders.id, { onDelete: 'restrict' }),
+  receivedByActorId: uuid('received_by_actor_id').notNull(),
+  notes: text('notes'),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  ...timestamps,
+}, (table) => [
+  index('goods_receipts_organization_id_idx').on(table.organizationId),
+  index('goods_receipts_po_id_idx').on(table.purchaseOrderId),
+])
+
+export const stockCounts = pgTable('stock_counts', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  stockLocationId: uuid('stock_location_id')
+    .references(() => stockLocations.id, { onDelete: 'restrict' }),
+  status: text('status').notNull().default('open'),
+  countedByActorId: uuid('counted_by_actor_id').notNull(),
+  approvedByActorId: uuid('approved_by_actor_id'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  notes: text('notes'),
+  ...timestamps,
+}, (table) => [
+  index('stock_counts_organization_id_idx').on(table.organizationId),
+  index('stock_counts_location_id_idx').on(table.locationId),
+  check('stock_counts_status_check', enumCheck(table.status, StockCountStatusSchema.options)),
+])
+
+export const stockAdjustments = pgTable('stock_adjustments', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  stockCountId: uuid('stock_count_id')
+    .references(() => stockCounts.id, { onDelete: 'set null' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  stockLocationId: uuid('stock_location_id')
+    .references(() => stockLocations.id, { onDelete: 'restrict' }),
+  expectedQuantity: real('expected_quantity').notNull(),
+  countedQuantity: real('counted_quantity').notNull(),
+  adjustedQuantity: real('adjusted_quantity').notNull(),
+  unit: text('unit').notNull(),
+  reason: text('reason'),
+  status: text('status').notNull().default('draft'),
+  approvedByActorId: uuid('approved_by_actor_id'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  ...timestamps,
+}, (table) => [
+  index('stock_adjustments_organization_id_idx').on(table.organizationId),
+  index('stock_adjustments_location_id_idx').on(table.locationId),
+  index('stock_adjustments_stock_count_id_idx').on(table.stockCountId),
+  check('stock_adjustments_status_check', enumCheck(table.status, StockCountStatusSchema.options)),
+])
+
+export const recipes = pgTable('recipes', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  productId: uuid('product_id')
+    .notNull()
+    .references(() => products.id, { onDelete: 'restrict' }),
+  name: text('name').notNull(),
+  yieldQuantity: real('yield_quantity').notNull().default(1),
+  yieldUnit: text('yield_unit').notNull().default('portion'),
+  status: text('status').notNull().default('active'),
+  ...timestamps,
+}, (table) => [
+  index('recipes_organization_id_idx').on(table.organizationId),
+  index('recipes_product_id_idx').on(table.productId),
+  check('recipes_status_check', enumCheck(table.status, RecipeStatusSchema.options)),
+])
+
+export const recipeIngredients = pgTable('recipe_ingredients', {
+  ...primaryId,
+  recipeId: uuid('recipe_id')
+    .notNull()
+    .references(() => recipes.id, { onDelete: 'cascade' }),
+  inventoryItemId: uuid('inventory_item_id')
+    .notNull()
+    .references(() => inventoryItems.id, { onDelete: 'restrict' }),
+  quantity: real('quantity').notNull(),
+  unit: text('unit').notNull(),
+  wastagePct: real('wastage_pct').default(0),
+  ...timestamps,
+}, (table) => [
+  index('recipe_ingredients_recipe_id_idx').on(table.recipeId),
+  index('recipe_ingredients_item_id_idx').on(table.inventoryItemId),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1301,4 +1596,16 @@ export const restaurantTenantScopedTables = [
   giftCards,
   customerCreditAccounts,
   customerFeedback,
+  suppliers,
+  inventoryItems,
+  stockLocations,
+  stockLevels,
+  stockMovements,
+  purchaseOrders,
+  purchaseOrderItems,
+  goodsReceipts,
+  stockCounts,
+  stockAdjustments,
+  recipes,
+  recipeIngredients,
 ] as const
