@@ -461,6 +461,14 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
+// P12 — Staff Attendance.
+export const AttendanceStatusSchema = z.enum([
+  'clocked_in',
+  'on_break',
+  'clocked_out',
+])
+export type AttendanceStatus = z.infer<typeof AttendanceStatusSchema>
+
 // P12 — Inventory, Recipes & Purchasing.
 export const StockMovementTypeSchema = z.enum([
   'receive',

@@ -36,6 +36,9 @@ import {
 // `docs/prd/*` module adds its own as it's implemented (see DATA_MODEL.md
 // "permissions").
 const SYSTEM_PERMISSIONS = [
+  // P12 — Staff Attendance.
+  'attendance:clock_inout',
+  'attendance:manage',
   'orders:create',
   'orders:void_item',
   'payments:take_cash',
@@ -151,6 +154,8 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   regional_manager: [...SYSTEM_PERMISSIONS],
   branch_manager: SYSTEM_PERMISSIONS.filter((key) => key !== 'products:approve_large_price_change'),
   supervisor: [
+    'attendance:clock_inout',
+    'attendance:manage',
     'orders:create',
     'orders:void_item',
     'payments:take_cash',

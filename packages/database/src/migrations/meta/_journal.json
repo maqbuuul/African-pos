@@ -127,6 +127,13 @@
       "when": 1785800000000,
       "tag": "0017_p12_stock_levels_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785900000000,
+      "tag": "0018_p12_staff_attendance",
+      "breakpoints": true
     }
   ]
 }

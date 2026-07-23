@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm'
 import { boolean, check, index, integer, jsonb, pgTable, real, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import {
+  AttendanceStatusSchema,
   BillSplitMethodSchema,
   BillStatusSchema,
   CashAdjustmentDirectionSchema,
@@ -1683,6 +1684,37 @@ export const syncConflicts = pgTable('sync_conflicts', {
   index('sync_conflicts_location_id_idx').on(table.locationId),
 ])
 
+// ---------------------------------------------------------------------------
+// P12 — Staff Attendance. Clock-in/out records for staff members, including
+// break tracking. Each record captures a single work session.
+// ---------------------------------------------------------------------------
+export const staffAttendance = pgTable('staff_attendance', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  staffId: uuid('staff_id')
+    .notNull()
+    .references(() => staff.id, { onDelete: 'restrict' }),
+  clockIn: timestamp('clock_in', { withTimezone: true }).notNull().defaultNow(),
+  clockOut: timestamp('clock_out', { withTimezone: true }),
+  status: text('status').notNull().default('clocked_in'),
+  breakStart: timestamp('break_start', { withTimezone: true }),
+  breakEnd: timestamp('break_end', { withTimezone: true }),
+  notes: text('notes'),
+  recordedByActorId: uuid('recorded_by_actor_id').notNull(),
+  ...timestamps,
+}, (table) => [
+  index('staff_attendance_organization_id_idx').on(table.organizationId),
+  index('staff_attendance_location_id_idx').on(table.locationId),
+  index('staff_attendance_staff_id_idx').on(table.staffId),
+  index('staff_attendance_clock_in_idx').on(table.clockIn),
+  check('staff_attendance_status_check', enumCheck(table.status, AttendanceStatusSchema.options)),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1738,4 +1770,5 @@ export const restaurantTenantScopedTables = [
   syncOperations,
   syncCursors,
   syncConflicts,
+  staffAttendance,
 ] as const
