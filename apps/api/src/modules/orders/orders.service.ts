@@ -10,7 +10,10 @@ import {
   orderItems,
   orders,
   products,
+  recipeIngredients,
+  recipes,
   restaurantTables,
+  stockMovements,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -692,6 +695,9 @@ export class OrdersService {
 
       const [updated] = await db.update(orderItems).set({ status: 'served' }).where(eq(orderItems.id, itemId)).returning()
       if (!updated) throw new Error('failed to mark order item served')
+
+      await this.deductRecipeIngredients(db, authContext, order.locationId, item.productId, itemId)
+
       return updated
     })
 
@@ -706,6 +712,43 @@ export class OrdersService {
     })
 
     return row
+  }
+
+  private async deductRecipeIngredients(
+    db: Db,
+    authContext: AuthContext,
+    locationId: string,
+    productId: string,
+    orderItemId: string,
+  ) {
+    const [recipe] = await db
+      .select()
+      .from(recipes)
+      .where(and(eq(recipes.productId, productId), eq(recipes.organizationId, authContext.organizationId)))
+      .limit(1)
+    if (!recipe) return
+
+    const ingredients = await db
+      .select({ inventoryItemId: recipeIngredients.inventoryItemId, quantity: recipeIngredients.quantity, unit: recipeIngredients.unit })
+      .from(recipeIngredients)
+      .where(eq(recipeIngredients.recipeId, recipe.id))
+    if (ingredients.length === 0) return
+
+    const now = new Date()
+    for (const ing of ingredients) {
+      await db.insert(stockMovements).values({
+        organizationId: authContext.organizationId,
+        locationId,
+        inventoryItemId: ing.inventoryItemId,
+        movementType: 'recipe_deduction',
+        quantity: -Math.abs(ing.quantity),
+        unit: ing.unit,
+        referenceType: 'order_item',
+        referenceId: orderItemId,
+        movedByActorId: authContext.actorId,
+        movedAt: now,
+      })
+    }
   }
 
   private async resolveItemStatusChange(
