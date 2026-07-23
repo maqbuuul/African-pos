@@ -6,6 +6,11 @@ import {
   businesses,
   devices,
   floorPlans,
+  inventoryItems,
+  stockLevels,
+  stockLocations,
+  stockMovements,
+  suppliers,
   kdsStations,
   locations,
   menuCategories,
@@ -498,6 +503,98 @@ const seedChef = async (db: Db, org: { id: string }, location: { id: string }, r
   return chef
 }
 
+const seedInventoryDemo = async (db: Db, org: { id: string; name: string }, location: { id: string }) => {
+  const [existingSupplier] = await db.select().from(suppliers).where(eq(suppliers.organizationId, org.id))
+  if (existingSupplier) {
+    console.warn('Inventory demo data already seeded, skipping.')
+    return
+  }
+
+  const [supplier] = await db
+    .insert(suppliers)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Kenia Fresh Produce Ltd',
+      contactPerson: 'John Kamau',
+      phone: '+254700100200',
+      email: 'orders@keniafresh.co.ke',
+      paymentTerms: 'net30',
+      currency: 'KES',
+      status: 'active',
+    })
+    .returning()
+
+  const [supplier2] = await db
+    .insert(suppliers)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Nairobi Meat Packers',
+      contactPerson: 'Grace Wanjiku',
+      phone: '+254700100300',
+      paymentTerms: 'net15',
+      currency: 'KES',
+      status: 'active',
+    })
+    .returning()
+
+  const [stockLocation] = await db
+    .insert(stockLocations)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Main Dry Store', description: 'Room 101 — dry goods' })
+    .returning()
+
+  const [stockLocation2] = await db
+    .insert(stockLocations)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Walk-in Chiller', description: 'Perishables' })
+    .returning()
+
+  const [item1] = await db
+    .insert(inventoryItems)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Maize Flour',
+      sku: 'RAW-MZ-001',
+      itemType: 'ingredient',
+      unit: 'kg',
+      unitCost: 15000,
+      currency: 'KES',
+      reorderPoint: 20,
+      preferredSupplierId: supplier?.id,
+      status: 'active',
+    })
+    .returning()
+
+  const [item2] = await db
+    .insert(inventoryItems)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Beef (boneless)',
+      sku: 'RAW-BF-001',
+      itemType: 'ingredient',
+      unit: 'kg',
+      unitCost: 80000,
+      currency: 'KES',
+      reorderPoint: 10,
+      preferredSupplierId: supplier2?.id,
+      status: 'active',
+    })
+    .returning()
+
+  if (item1 && stockLocation) {
+    await db.insert(stockLevels).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item1.id, stockLocationId: stockLocation.id, quantity: 50, unit: 'kg' })
+    await db.insert(stockMovements).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item1.id, stockLocationId: stockLocation.id, movementType: 'receive', quantity: 50, unit: 'kg', unitCost: 15000, reason: 'initial stock', movedByActorId: '00000000-0000-0000-0000-000000000000' })
+  }
+  if (item2 && stockLocation2) {
+    await db.insert(stockLevels).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item2.id, stockLocationId: stockLocation2.id, quantity: 30, unit: 'kg' })
+    await db.insert(stockMovements).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item2.id, stockLocationId: stockLocation2.id, movementType: 'receive', quantity: 30, unit: 'kg', unitCost: 80000, reason: 'initial stock', movedByActorId: '00000000-0000-0000-0000-000000000000' })
+  }
+
+  console.warn(`Seeded P12 inventory demo for "${org.name}": 2 suppliers, 2 stock locations, 2 inventory items`)
+}
+
 const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   const existing = await db.select().from(organizations).where(eq(organizations.name, 'Izzi Brunch and Cake'))
   if (existing[0]) {
@@ -509,6 +606,7 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
       const chef = await seedChef(db, existing[0], location, roleIds)
       await seedFloorPlanAndTables(db, existing[0], location, waiterOne.id)
       await seedKitchenDemo(db, existing[0], location, chef.id)
+      await seedInventoryDemo(db, existing[0], location)
     }
     return
   }
@@ -634,6 +732,7 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   await seedMenuCatalog(db, org, location)
   await seedFloorPlanAndTables(db, org, location, waiterOne.id)
   await seedKitchenDemo(db, org, location, chef.id)
+  await seedInventoryDemo(db, org, location)
 }
 
 const run = async () => {
