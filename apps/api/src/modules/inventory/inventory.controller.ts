@@ -2,7 +2,6 @@ import { Controller, Get, Inject, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
-import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { InventoryService } from './inventory.service.js'
 
 @Controller('api/v1/inventory')
@@ -28,5 +27,10 @@ export class InventoryController {
   @Get('reports/wastage')
   wastage(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
     return this.inventoryService.wastageSummaryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reports/stock-activity')
+  stockActivity(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.inventoryService.stockActivityReport(req.authContext!, locationId, new Date(from), new Date(to))
   }
 }
