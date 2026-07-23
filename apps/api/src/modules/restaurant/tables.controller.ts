@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -69,5 +69,12 @@ export class TablesController {
   @RequirePermission('tables:manage')
   transfer(@Param('id') id: string, @ValidatedBody(TransferTableDto) dto: TransferTableDto, @Req() req: Request) {
     return this.tablesService.transfer(req.authContext!, id, dto)
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermission('tables:edit_layout')
+  delete(@Param('id') id: string, @Req() req: Request) {
+    return this.tablesService.delete(req.authContext!, id)
   }
 }

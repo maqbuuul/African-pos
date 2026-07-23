@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
@@ -1232,5 +1232,80 @@ export class PaymentsService {
       // Fraud check is best-effort — a failure here must never block or roll back
       // a confirmed payment. Silently swallow and let the audit trail stand as-is.
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async paymentMethodMixReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          method: payments.method,
+          totalAmount: sql<number>`COALESCE(SUM(${payments.amount}), 0)`,
+          count: sql<number>`COUNT(*)`,
+          avgAmount: sql<number>`COALESCE(AVG(${payments.amount}), 0)`,
+        })
+        .from(payments)
+        .where(and(eq(payments.organizationId, authContext.organizationId), eq(payments.locationId, locationId), eq(payments.status, 'confirmed'), sql`${payments.paidAt} >= ${from}`, sql`${payments.paidAt} <= ${to}`))
+        .groupBy(payments.method)
+        .orderBy(sql`SUM(${payments.amount}) DESC`)
+      return { from, to, rows }
+    })
+  }
+
+  async refundSummaryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          method: refunds.method,
+          totalRefunded: sql<number>`COALESCE(SUM(${refunds.amount}), 0)`,
+          count: sql<number>`COUNT(*)`,
+          avgRefund: sql<number>`COALESCE(AVG(${refunds.amount}), 0)`,
+        })
+        .from(refunds)
+        .where(and(eq(refunds.organizationId, authContext.organizationId), eq(refunds.locationId, locationId), eq(refunds.status, 'settled'), sql`${refunds.createdAt} >= ${from}`, sql`${refunds.createdAt} <= ${to}`))
+        .groupBy(refunds.method)
+        .orderBy(sql`SUM(${refunds.amount}) DESC`)
+      return { from, to, rows }
+    })
+  }
+
+  async listUnreconciled(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      return db
+        .select({
+          id: payments.id,
+          billId: payments.billId,
+          method: payments.method,
+          amount: payments.amount,
+          provider: payments.provider,
+          providerReference: payments.providerReference,
+          paidAt: payments.paidAt,
+        })
+        .from(payments)
+        .where(and(
+          eq(payments.organizationId, authContext.organizationId),
+          eq(payments.locationId, locationId),
+          eq(payments.status, 'confirmed'),
+          isNull(payments.reconciledAt),
+        ))
+        .orderBy(desc(payments.paidAt))
+    })
+  }
+
+  async reconcilePayment(authContext: AuthContext, paymentId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select()
+        .from(payments)
+        .where(and(eq(payments.id, paymentId), eq(payments.organizationId, authContext.organizationId)))
+      if (!rows.length) throw new NotFoundException('payment not found')
+      const payment = rows[0]!
+      if (payment.status !== 'confirmed') throw new BadRequestException('only confirmed payments can be reconciled')
+      if (payment.reconciledAt) throw new BadRequestException('payment already reconciled')
+      await db.update(payments).set({ reconciledAt: new Date() }).where(eq(payments.id, paymentId))
+      return { id: paymentId, reconciled: true }
+    })
   }
 }

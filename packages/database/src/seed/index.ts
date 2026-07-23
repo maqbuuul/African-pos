@@ -6,6 +6,11 @@ import {
   businesses,
   devices,
   floorPlans,
+  inventoryItems,
+  stockLevels,
+  stockLocations,
+  stockMovements,
+  suppliers,
   kdsStations,
   locations,
   menuCategories,
@@ -119,10 +124,19 @@ const SYSTEM_PERMISSIONS = [
   'receipts:resend',
   'receipts:view_status',
   'receipts:configure_preferences', // owner/manager — per-location notification config
-  // P10 — Offline Sync (docs/prd/11-offline-sync.md Permissions table).
-  'sync:view_device_health', // branch_manager+ — per-device sync health within own location
-  'sync:view_conflicts',     // branch_manager+ — view conflict review queue
-  'sync:resolve_conflicts',  // branch_manager+ — resolve flagged conflicts
+  // P13 — CRM + Loyalty (docs/prd/13-crm-loyalty.md Permissions table).
+  'customers:view',
+  'customers:edit',
+  'customers:merge',
+  'loyalty:redeem',
+  'gift_cards:view',
+  'gift_cards:manage',
+  'gift_cards:redeem',
+  'credit_accounts:charge',
+  'credit_accounts:settle',
+  'reviews:view',
+  'reviews:create',
+  'loyalty:earn',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -170,24 +184,39 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'receipts:send',
     'receipts:resend',
     'receipts:view_status',
+    // P13 — CRM: view/edit customers, redeem loyalty, view gift cards, settle credit.
+    'customers:view',
+    'customers:edit',
+    'loyalty:redeem',
+    'gift_cards:view',
+    'gift_cards:redeem',
+    'credit_accounts:settle',
+    'reviews:view',
   ],
   // P7 — cashiers can take mobile money and card in addition to cash.
   // P8 — cashiers can open and close their own shifts.
   // P9 — cashiers can generate and send receipts for their own transactions.
-  cashier: ['orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
+  // P13 — cashiers can view/edit customers, redeem loyalty, redeem gift cards.
+  cashier: ['customers:view', 'customers:edit', 'loyalty:redeem', 'gift_cards:view', 'gift_cards:redeem', 'credit_accounts:settle', 'orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
   // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
   // scoped to pre-send by OrdersService's own state check, not a narrower
   // permission (master plan's Waiter Payment Policy doesn't grant waiters
   // any discount capability, so discount_small/_large stay off this list).
   // P7 — waiters can take cash and mobile money (common at table service).
   // P9 — waiters can generate and send receipts for their own tables.
-  waiter: ['orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
+  // P13 — waiters can view customers and redeem loyalty at table.
+  waiter: ['customers:view', 'loyalty:redeem', 'orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
   chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
   stock_controller: ['inventory:adjust'],
   // P7 — accountants can reconcile and cancel intents in addition to existing grants.
   // P8 — accountants can view shift P&L as part of reporting.
   // P9 — accountants can view receipt status for reconciliation.
-  accountant: ['reports:view_profit', 'payments:refund', 'payments:reconcile', 'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
+  // P13 — accountants can view customers and reviews.
+  accountant: ['customers:view',   'reviews:view',
+  'reviews:create',
+  'reports:view_profit',   'payments:refund',
+  'payments:reconcile',
+  'payments:cancel', 'shifts:view_pnl', 'receipts:view_status'],
   auditor: ['reports:view_profit'],
 }
 
@@ -364,9 +393,8 @@ const seedFloorPlanAndTables = async (
       section: 'patio',
       capacity: 4,
       assignedStaffId: waiterOneId,
-      qrSlug: 'table-t1',
     },
-    { organizationId: org.id, locationId: location.id, floorPlanId: floorPlan.id, label: 'T2', section: 'patio', capacity: 2, qrSlug: 'table-t2' },
+    { organizationId: org.id, locationId: location.id, floorPlanId: floorPlan.id, label: 'T2', section: 'patio', capacity: 2 },
     {
       organizationId: org.id,
       locationId: location.id,
@@ -380,18 +408,6 @@ const seedFloorPlanAndTables = async (
   ])
 
   console.warn(`Seeded P4 floor plan for "${org.name}": ${floorPlan.name} (${floorPlan.id}), tables T1-T3`)
-}
-
-const seedTableQrSlugs = async (db: Db, org: { id: string }) => {
-  await db
-    .update(restaurantTables)
-    .set({ qrSlug: 'table-t1' })
-    .where(and(eq(restaurantTables.organizationId, org.id), eq(restaurantTables.label, 'T1'), isNull(restaurantTables.qrSlug)))
-  await db
-    .update(restaurantTables)
-    .set({ qrSlug: 'table-t2' })
-    .where(and(eq(restaurantTables.organizationId, org.id), eq(restaurantTables.label, 'T2'), isNull(restaurantTables.qrSlug)))
-  console.warn('Backfilled QR slugs for T1, T2')
 }
 
 const WAITER_ONE_PIN = '1111'
@@ -493,6 +509,98 @@ const seedChef = async (db: Db, org: { id: string }, location: { id: string }, r
   return chef
 }
 
+const seedInventoryDemo = async (db: Db, org: { id: string; name: string }, location: { id: string }) => {
+  const [existingSupplier] = await db.select().from(suppliers).where(eq(suppliers.organizationId, org.id))
+  if (existingSupplier) {
+    console.warn('Inventory demo data already seeded, skipping.')
+    return
+  }
+
+  const [supplier] = await db
+    .insert(suppliers)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Kenia Fresh Produce Ltd',
+      contactPerson: 'John Kamau',
+      phone: '+254700100200',
+      email: 'orders@keniafresh.co.ke',
+      paymentTerms: 'net30',
+      currency: 'KES',
+      status: 'active',
+    })
+    .returning()
+
+  const [supplier2] = await db
+    .insert(suppliers)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Nairobi Meat Packers',
+      contactPerson: 'Grace Wanjiku',
+      phone: '+254700100300',
+      paymentTerms: 'net15',
+      currency: 'KES',
+      status: 'active',
+    })
+    .returning()
+
+  const [stockLocation] = await db
+    .insert(stockLocations)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Main Dry Store', description: 'Room 101 — dry goods' })
+    .returning()
+
+  const [stockLocation2] = await db
+    .insert(stockLocations)
+    .values({ organizationId: org.id, locationId: location.id, name: 'Walk-in Chiller', description: 'Perishables' })
+    .returning()
+
+  const [item1] = await db
+    .insert(inventoryItems)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Maize Flour',
+      sku: 'RAW-MZ-001',
+      itemType: 'ingredient',
+      unit: 'kg',
+      unitCost: 15000,
+      currency: 'KES',
+      reorderPoint: 20,
+      preferredSupplierId: supplier?.id,
+      status: 'active',
+    })
+    .returning()
+
+  const [item2] = await db
+    .insert(inventoryItems)
+    .values({
+      organizationId: org.id,
+      locationId: location.id,
+      name: 'Beef (boneless)',
+      sku: 'RAW-BF-001',
+      itemType: 'ingredient',
+      unit: 'kg',
+      unitCost: 80000,
+      currency: 'KES',
+      reorderPoint: 10,
+      preferredSupplierId: supplier2?.id,
+      status: 'active',
+    })
+    .returning()
+
+  if (item1 && stockLocation) {
+    await db.insert(stockLevels).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item1.id, stockLocationId: stockLocation.id, quantity: 50, unit: 'kg' })
+    await db.insert(stockMovements).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item1.id, stockLocationId: stockLocation.id, movementType: 'receive', quantity: 50, unit: 'kg', unitCost: 15000, reason: 'initial stock', movedByActorId: '00000000-0000-0000-0000-000000000000' })
+  }
+  if (item2 && stockLocation2) {
+    await db.insert(stockLevels).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item2.id, stockLocationId: stockLocation2.id, quantity: 30, unit: 'kg' })
+    await db.insert(stockMovements).values({ organizationId: org.id, locationId: location.id, inventoryItemId: item2.id, stockLocationId: stockLocation2.id, movementType: 'receive', quantity: 30, unit: 'kg', unitCost: 80000, reason: 'initial stock', movedByActorId: '00000000-0000-0000-0000-000000000000' })
+  }
+
+  console.warn(`Seeded P12 inventory demo for "${org.name}": 2 suppliers, 2 stock locations, 2 inventory items`)
+}
+
 const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
   const existing = await db.select().from(organizations).where(eq(organizations.name, 'Izzi Brunch and Cake'))
   if (existing[0]) {
@@ -503,8 +611,8 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
       const { waiterOne } = await seedWaiters(db, existing[0], location, roleIds)
       const chef = await seedChef(db, existing[0], location, roleIds)
       await seedFloorPlanAndTables(db, existing[0], location, waiterOne.id)
-      await seedTableQrSlugs(db, existing[0])
       await seedKitchenDemo(db, existing[0], location, chef.id)
+      await seedInventoryDemo(db, existing[0], location)
     }
     return
   }
@@ -629,8 +737,8 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
 
   await seedMenuCatalog(db, org, location)
   await seedFloorPlanAndTables(db, org, location, waiterOne.id)
-  await seedTableQrSlugs(db, org)
   await seedKitchenDemo(db, org, location, chef.id)
+  await seedInventoryDemo(db, org, location)
 }
 
 const run = async () => {

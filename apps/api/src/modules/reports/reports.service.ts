@@ -10,9 +10,14 @@ import {
   orders,
   payments,
   refunds,
+  staff,
+  shifts,
   stockLevels,
   stockMovements,
   tips,
+  customers,
+  customerFeedback,
+  loyaltyAccounts,
   withTenantContext,
 } from '@hospitality-os/database'
 
@@ -171,12 +176,77 @@ export class ReportsService {
     })
   }
 
-  async staffDashboard(_authContext: AuthContext, _locationId: string, days = 7) {
-    return { days, attendance: [], performance: [] }
+  async staffDashboard(authContext: AuthContext, locationId: string, days = 7) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const since = sql`CURRENT_DATE - (${days} - 1) * INTERVAL '1 day'`
+      const [attendance, performance] = await Promise.all([
+        // Shift attendance per staff member
+        db
+          .select({
+            staffId: shifts.openedByStaffId,
+            staffName: sql<string>`MAX(${staff.name})`,
+            totalShifts: sql<number>`COUNT(*)`,
+            closedShifts: sql<number>`COUNT(*) FILTER (WHERE ${shifts.status} = 'closed')`,
+            totalRevenue: sql<number>`COALESCE(SUM(${cashDrawerSessions.countedAmount}), 0)`,
+          })
+          .from(shifts)
+          .leftJoin(staff, eq(shifts.openedByStaffId, staff.id))
+          .leftJoin(cashDrawerSessions, eq(cashDrawerSessions.shiftId, shifts.id))
+          .where(and(eq(shifts.organizationId, authContext.organizationId), eq(shifts.locationId, locationId), sql`DATE(${shifts.openedAt}) >= ${since}`))
+          .groupBy(shifts.openedByStaffId)
+          .orderBy(desc(sql`COUNT(*)`)),
+        // Sales performance per staff member from orders
+        db
+          .select({
+            staffId: orders.staffId,
+            staffName: sql<string>`MAX(${staff.name})`,
+            totalOrders: sql<number>`COUNT(*)`,
+            totalRevenue: sql<number>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+            avgTicket: sql<number>`COALESCE(ROUND(AVG(${orders.totalAmount})), 0)`,
+          })
+          .from(orders)
+          .leftJoin(staff, eq(orders.staffId, staff.id))
+          .where(and(eq(orders.organizationId, authContext.organizationId), eq(orders.locationId, locationId), sql`${orders.status} NOT IN ('draft', 'cancelled')`, sql`DATE(${orders.closedAt}) >= ${since}`))
+          .groupBy(orders.staffId)
+          .orderBy(desc(sql`SUM(${orders.totalAmount})`)),
+      ])
+      return { days, attendance, performance }
+    })
   }
 
-  async customerDashboard(_authContext: AuthContext, _locationId: string) {
-    return { totalActive: 0, newThisMonth: 0 }
+  async customerDashboard(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const since = sql`DATE_TRUNC('month', CURRENT_DATE)`
+      const [active, newMonthly, feedback, loyalty] = await Promise.all([
+        db
+          .select({ total: sql<number>`COUNT(*)` })
+          .from(customers)
+          .where(and(eq(customers.organizationId, authContext.organizationId), eq(customers.status, 'active'))),
+        db
+          .select({ total: sql<number>`COUNT(*)` })
+          .from(customers)
+          .where(and(eq(customers.organizationId, authContext.organizationId), sql`${customers.createdAt} >= ${since}`)),
+        db
+          .select({
+            rating: customerFeedback.rating,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(customerFeedback)
+          .where(and(eq(customerFeedback.organizationId, authContext.organizationId), eq(customerFeedback.locationId, locationId)))
+          .groupBy(customerFeedback.rating)
+          .orderBy(customerFeedback.rating),
+        db
+          .select({ total: sql<number>`COUNT(*)` })
+          .from(loyaltyAccounts)
+          .where(eq(loyaltyAccounts.organizationId, authContext.organizationId)),
+      ])
+      return {
+        totalActive: Number(active[0]?.total ?? 0),
+        newThisMonth: Number(newMonthly[0]?.total ?? 0),
+        loyaltyEnrolled: Number(loyalty[0]?.total ?? 0),
+        feedbackBreakdown: feedback.map((r) => ({ rating: r.rating, count: Number(r.count) })),
+      }
+    })
   }
 
   async financeDashboard(authContext: AuthContext, locationId: string) {
@@ -224,5 +294,64 @@ export class ReportsService {
         cashDiscrepancies: Number(drawer?.discrepancies ?? 0),
       }
     })
+  }
+
+  async paymentsReport(authContext: AuthContext, locationId: string, days = 7) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const since = sql`CURRENT_DATE - (${days} - 1) * INTERVAL '1 day'`
+      const [methodBreakdown, dailyTrend] = await Promise.all([
+        db
+          .select({
+            method: payments.method,
+            totalAmount: sql<number>`COALESCE(SUM(${payments.amount}), 0)`,
+            count: sql<number>`COUNT(*)`,
+            refunded: sql<number>`COALESCE(SUM(${refunds.amount}) FILTER (WHERE ${refunds.status} = 'completed'), 0)`,
+          })
+          .from(payments)
+          .leftJoin(refunds, eq(refunds.paymentId, payments.id))
+          .where(and(eq(payments.organizationId, authContext.organizationId), eq(payments.locationId, locationId), eq(payments.status, 'confirmed'), sql`DATE(${payments.paidAt}) >= ${since}`))
+          .groupBy(payments.method)
+          .orderBy(desc(sql`SUM(${payments.amount})`)),
+        db
+          .select({
+            date: sql<string>`DATE(${payments.paidAt})`,
+            totalAmount: sql<number>`COALESCE(SUM(${payments.amount}), 0)`,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(payments)
+          .where(and(eq(payments.organizationId, authContext.organizationId), eq(payments.locationId, locationId), eq(payments.status, 'confirmed'), sql`DATE(${payments.paidAt}) >= ${since}`))
+          .groupBy(sql`DATE(${payments.paidAt})`)
+          .orderBy(sql`DATE(${payments.paidAt})`),
+      ])
+      return { days, methodBreakdown, dailyTrend }
+    })
+  }
+
+  async exportReport(authContext: AuthContext, locationId: string, type: string, params: { days?: number; startDate?: string; endDate?: string }) {
+    const days = params.days ?? 7
+    switch (type) {
+      case 'sales': {
+        const data = await this.salesDashboard(authContext, locationId, days)
+        const rows = data.revenueTrend.map((r: { date: string; revenue: number; orderCount: number }) => `${r.date},${r.revenue},${r.orderCount}`)
+        return { csv: `date,revenue,order_count\n${rows.join('\n')}\n`, filename: `sales_report_${days}d.csv` }
+      }
+      case 'payments': {
+        const data = await this.paymentsReport(authContext, locationId, days)
+        const rows = data.methodBreakdown.map((r: { method: string; totalAmount: number; count: number }) => `${r.method},${r.totalAmount},${r.count}`)
+        return { csv: `method,total_amount,count\n${rows.join('\n')}\n`, filename: `payments_report_${days}d.csv` }
+      }
+      case 'inventory': {
+        const data = await this.inventoryDashboard(authContext, locationId)
+        const rows = data.lowStock.map((r) => `${r.itemName},${r.currentStock ?? 0},${r.reorderPoint ?? 0}`)
+        return { csv: `item_name,current_stock,reorder_point\n${rows.join('\n')}\n`, filename: `inventory_report.csv` }
+      }
+      case 'staff': {
+        const data = await this.staffDashboard(authContext, locationId, days)
+        const rows = data.performance.map((r: { staffName: string; totalOrders: number; totalRevenue: number }) => `${r.staffName},${r.totalOrders},${r.totalRevenue}`)
+        return { csv: `staff_name,total_orders,total_revenue\n${rows.join('\n')}\n`, filename: `staff_report_${days}d.csv` }
+      }
+      default:
+        return { csv: `report_type,exported,true\n${type},not_supported\n`, filename: `report.csv` }
+    }
   }
 }

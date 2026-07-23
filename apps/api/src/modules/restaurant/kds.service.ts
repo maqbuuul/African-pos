@@ -842,6 +842,22 @@ export class KdsService {
     }
   }
 
+  async getStationById(authContext: AuthContext, stationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      await this.assertPermission(db, authContext, VIEW_PERMISSION)
+      const station = await this.loadStation(db, authContext.organizationId, stationId)
+      return station
+    })
+  }
+
+  async deleteStation(authContext: AuthContext, stationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      await this.assertPermission(db, authContext, MANAGE_STATIONS_PERMISSION)
+      const existing = await this.loadStation(db, authContext.organizationId, stationId)
+      await db.delete(kdsStations).where(eq(kdsStations.id, stationId))
+    })
+  }
+
   private async assertPermission(db: Db, authContext: AuthContext, permission: string) {
     const granted = await this.permissionsService.listGrantedPermissions(db, authContext)
     if (!granted.includes(permission)) {

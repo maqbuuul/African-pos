@@ -78,4 +78,27 @@ export class FloorPlansService {
 
     return row
   }
+
+  async getById(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [plan] = await db
+        .select()
+        .from(floorPlans)
+        .where(and(eq(floorPlans.id, id), eq(floorPlans.organizationId, authContext.organizationId)))
+      if (!plan) throw new NotFoundException('floor plan not found')
+      return plan
+    })
+  }
+
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(floorPlans)
+        .where(and(eq(floorPlans.id, id), eq(floorPlans.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('floor plan not found')
+
+      await db.delete(floorPlans).where(eq(floorPlans.id, id))
+    })
+  }
 }

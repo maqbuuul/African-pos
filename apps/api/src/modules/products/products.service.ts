@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   menuCategories,
@@ -359,6 +359,18 @@ export class ProductsService {
     return updated
   }
 
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(products)
+        .where(and(eq(products.id, id), eq(products.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('product not found')
+
+      await db.delete(products).where(eq(products.id, id))
+    })
+  }
+
   private async loadProduct(db: Db, organizationId: string, id: string) {
     const [product] = await db.select().from(products).where(and(eq(products.id, id), eq(products.organizationId, organizationId)))
     if (!product) throw new NotFoundException('product not found')
@@ -374,5 +386,70 @@ export class ProductsService {
     if (rows.length !== new Set(modifierGroupIds).size) {
       throw new NotFoundException('one or more modifier groups not found')
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  async priceHistoryReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          productId: productPrices.productId,
+          productName: sql<string>`MAX(${products.name})`,
+          priceAmount: productPrices.priceAmount,
+          currency: productPrices.currency,
+          effectiveFrom: productPrices.effectiveFrom,
+          effectiveTo: productPrices.effectiveTo,
+          reason: productPrices.reason,
+        })
+        .from(productPrices)
+        .innerJoin(products, eq(productPrices.productId, products.id))
+        .where(and(eq(productPrices.organizationId, authContext.organizationId), eq(products.locationId, locationId), sql`${productPrices.createdAt} >= ${from}`, sql`${productPrices.createdAt} <= ${to}`))
+        .orderBy(productPrices.effectiveFrom)
+      return { from, to, rows }
+    })
+  }
+
+  async unavailableItemsReport(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          id: products.id,
+          name: products.name,
+          categoryId: products.categoryId,
+          priceAmount: products.priceAmount,
+          currency: products.currency,
+          autoRestoreAt: products.autoRestoreAt,
+          updatedAt: products.updatedAt,
+        })
+        .from(products)
+        .where(and(eq(products.organizationId, authContext.organizationId), eq(products.locationId, locationId), eq(products.isAvailable, false), eq(products.status, 'active')))
+        .orderBy(products.updatedAt)
+      return { total: rows.length, rows }
+    })
+  }
+
+  async categoryBreakdownReport(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({
+          categoryId: products.categoryId,
+          categoryName: sql<string>`MAX(${menuCategories.name})`,
+          productCount: sql<number>`COUNT(*)`,
+          avgPrice: sql<number>`COALESCE(AVG(${products.priceAmount}), 0)`,
+          minPrice: sql<number>`COALESCE(MIN(${products.priceAmount}), 0)`,
+          maxPrice: sql<number>`COALESCE(MAX(${products.priceAmount}), 0)`,
+          totalValue: sql<number>`COALESCE(SUM(${products.priceAmount}), 0)`,
+          availableCount: sql<number>`COUNT(*) FILTER (WHERE ${products.isAvailable} = true)`,
+          unavailableCount: sql<number>`COUNT(*) FILTER (WHERE ${products.isAvailable} = false)`,
+        })
+        .from(products)
+        .innerJoin(menuCategories, eq(products.categoryId, menuCategories.id))
+        .where(and(eq(products.organizationId, authContext.organizationId), eq(products.locationId, locationId), ne(products.status, 'discontinued')))
+        .groupBy(products.categoryId)
+        .orderBy(sql`COUNT(*) DESC`)
+      return { rows }
+    })
   }
 }

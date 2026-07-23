@@ -214,9 +214,6 @@ export type TaxProvider = z.infer<typeof TaxProviderSchema>
 export const NotificationSubjectTypeSchema = z.enum(['staff', 'customer'])
 export type NotificationSubjectType = z.infer<typeof NotificationSubjectTypeSchema>
 
-export const StaffNotificationTypeSchema = z.enum(['waiter_request', 'bill_request', 'assistance', 'other'])
-export type StaffNotificationType = z.infer<typeof StaffNotificationTypeSchema>
-
 export const OrderStatusSchema = z.enum([
   'draft',
   'open',
@@ -464,6 +461,139 @@ export const BILL_STATUS_TRANSITIONS: Readonly<Record<BillStatus, readonly BillS
 export const BillSplitMethodSchema = z.enum(['by_item', 'by_seat', 'evenly'])
 export type BillSplitMethod = z.infer<typeof BillSplitMethodSchema>
 
-export const TableSessionSourceSchema = z.enum(['qr_scan', 'staff_assign'])
-export type TableSessionSource = z.infer<typeof TableSessionSourceSchema>
+// P12 — Inventory, Recipes & Purchasing.
+export const StockMovementTypeSchema = z.enum([
+  'receive',
+  'sale',
+  'recipe_deduction',
+  'transfer_out',
+  'transfer_in',
+  'adjustment',
+  'wastage',
+  'return',
+])
+export type StockMovementType = z.infer<typeof StockMovementTypeSchema>
+
+export const PurchaseOrderStatusSchema = z.enum([
+  'draft',
+  'sent',
+  'partially_received',
+  'received',
+  'cancelled',
+])
+export type PurchaseOrderStatus = z.infer<typeof PurchaseOrderStatusSchema>
+
+export const StockCountStatusSchema = z.enum([
+  'open',
+  'submitted',
+  'approved',
+])
+export type StockCountStatus = z.infer<typeof StockCountStatusSchema>
+
+export const InventoryItemTypeSchema = z.enum([
+  'ingredient',
+  'packaging',
+  'supply',
+  'finished_good',
+  'hotel_supply',
+  'other',
+])
+export type InventoryItemType = z.infer<typeof InventoryItemTypeSchema>
+
+export const RecipeStatusSchema = z.enum([
+  'draft',
+  'active',
+  'archived',
+])
+export type RecipeStatus = z.infer<typeof RecipeStatusSchema>
+
+export const UnitOfMeasureSchema = z.enum([
+  'piece',
+  'kg',
+  'g',
+  'lb',
+  'oz',
+  'l',
+  'ml',
+  'cup',
+  'tbsp',
+  'tsp',
+  'dozen',
+  'case',
+  'bag',
+  'box',
+  'bottle',
+  'can',
+  'crate',
+  'portion',
+])
+export type UnitOfMeasure = z.infer<typeof UnitOfMeasureSchema>
+
+// P13 — CRM + Loyalty.
+export const CustomerStatusSchema = z.enum(['active', 'inactive', 'merged'])
+export type CustomerStatus = z.infer<typeof CustomerStatusSchema>
+
+export const LoyaltyTierSchema = z.enum(['bronze', 'silver', 'gold', 'platinum'])
+export type LoyaltyTier = z.infer<typeof LoyaltyTierSchema>
+
+export const LoyaltyEventTypeSchema = z.enum(['earn', 'redeem', 'adjust', 'expire'])
+export type LoyaltyEventType = z.infer<typeof LoyaltyEventTypeSchema>
+
+export const GiftCardStatusSchema = z.enum(['active', 'redeemed', 'expired', 'cancelled'])
+export type GiftCardStatus = z.infer<typeof GiftCardStatusSchema>
+
+export const CreditAccountStatusSchema = z.enum(['active', 'frozen', 'closed'])
+export type CreditAccountStatus = z.infer<typeof CreditAccountStatusSchema>
+
+export const ConflictResolutionSchema = z.enum(['server_wins', 'append_merge', 'payment_dependent', 'manual_review', 'use_local', 'use_remote', 'manual'])
+export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>
+export const SyncEntityTypeSchema = z.enum(['orders', 'order_items', 'products', 'customers', 'inventory_items', 'payments', 'refunds', 'receipts'])
+export type SyncEntityType = z.infer<typeof SyncEntityTypeSchema>
+export const SyncOperationTypeSchema = z.enum(['create', 'update', 'delete'])
+export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>
+export const SyncOperationStatusSchema = z.enum(['pending', 'synced', 'conflict', 'failed'])
+export type SyncOperationStatus = z.infer<typeof SyncOperationStatusSchema>
+export const DeviceSyncStatusSchema = z.enum(['synced', 'pending', 'offline'])
+export type DeviceSyncStatus = z.infer<typeof DeviceSyncStatusSchema>
+
+export const SyncOperationSchema = z.object({
+  opId: z.string(),
+  organizationId: z.string(),
+  locationId: z.string(),
+  deviceId: z.string(),
+  actorId: z.string(),
+  entityType: SyncEntityTypeSchema,
+  entityId: z.string(),
+  operation: SyncOperationTypeSchema,
+  payload: z.record(z.unknown()),
+  createdAt: z.string(),
+  baseVersion: z.number().optional(),
+  idempotencyKey: z.string().optional(),
+})
+export type SyncOperation = z.infer<typeof SyncOperationSchema>
+
+export const SyncPushResultSchema = z.object({
+  accepted: z.array(z.object({
+    opId: z.string(),
+    serverEntityId: z.string(),
+  })),
+  conflicts: z.array(z.object({
+    opId: z.string(),
+    entityType: SyncEntityTypeSchema,
+    entityId: z.string(),
+    serverVersion: z.unknown().nullable(),
+    clientVersion: z.unknown(),
+    message: z.string(),
+  })),
+})
+export type SyncPushResult = z.infer<typeof SyncPushResultSchema>
+
+export const DeviceHealthSchema = z.object({
+  deviceId: z.string(),
+  status: z.string(),
+  batteryLevel: z.number().optional(),
+  onBattery: z.boolean().optional(),
+  lastSyncedAt: z.string().optional(),
+})
+export type DeviceHealth = z.infer<typeof DeviceHealthSchema>
 

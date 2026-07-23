@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
@@ -73,5 +73,31 @@ export class ProductsController {
   @RequirePermission('products:toggle_availability')
   markAvailable(@Param('id') id: string, @Req() req: Request) {
     return this.productsService.markAvailable(req.authContext!, id)
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  @RequirePermission('products:manage')
+  delete(@Param('id') id: string, @Req() req: Request) {
+    return this.productsService.delete(req.authContext!, id)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports
+  // ---------------------------------------------------------------------------
+  @Get('reports/price-history')
+  @RequirePermission('products:view_price_history')
+  priceHistoryReport(@Req() req: Request, @Query('locationId') locationId: string, @Query('from') from: string, @Query('to') to: string) {
+    return this.productsService.priceHistoryReport(req.authContext!, locationId, new Date(from), new Date(to))
+  }
+
+  @Get('reports/unavailable-items')
+  unavailableItems(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.productsService.unavailableItemsReport(req.authContext!, locationId)
+  }
+
+  @Get('reports/category-breakdown')
+  categoryBreakdown(@Req() req: Request, @Query('locationId') locationId: string) {
+    return this.productsService.categoryBreakdownReport(req.authContext!, locationId)
   }
 }

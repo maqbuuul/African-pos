@@ -95,4 +95,27 @@ export class CategoriesService {
 
     return row
   }
+
+  async getById(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [category] = await db
+        .select()
+        .from(menuCategories)
+        .where(and(eq(menuCategories.id, id), eq(menuCategories.organizationId, authContext.organizationId)))
+      if (!category) throw new NotFoundException('category not found')
+      return category
+    })
+  }
+
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(menuCategories)
+        .where(and(eq(menuCategories.id, id), eq(menuCategories.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('category not found')
+
+      await db.delete(menuCategories).where(eq(menuCategories.id, id))
+    })
+  }
 }

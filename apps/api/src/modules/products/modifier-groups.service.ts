@@ -107,4 +107,35 @@ export class ModifierGroupsService {
 
     return row
   }
+
+  async getById(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [group] = await db
+        .select()
+        .from(modifierGroups)
+        .where(and(eq(modifierGroups.id, id), eq(modifierGroups.organizationId, authContext.organizationId)))
+      if (!group) throw new NotFoundException('modifier group not found')
+
+      const options = await db
+        .select()
+        .from(modifiers)
+        .where(eq(modifiers.modifierGroupId, id))
+        .orderBy(modifiers.sortOrder)
+
+      return { ...group, modifiers: options }
+    })
+  }
+
+  async delete(authContext: AuthContext, id: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [existing] = await db
+        .select()
+        .from(modifierGroups)
+        .where(and(eq(modifierGroups.id, id), eq(modifierGroups.organizationId, authContext.organizationId)))
+      if (!existing) throw new NotFoundException('modifier group not found')
+
+      await db.delete(modifiers).where(eq(modifiers.modifierGroupId, id))
+      await db.delete(modifierGroups).where(eq(modifierGroups.id, id))
+    })
+  }
 }
