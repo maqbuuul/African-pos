@@ -3,6 +3,9 @@ import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
 import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
+import { CreateCreditAccountDto } from './dto/create-credit-account.dto.js'
+import { CreateCustomerDto } from './dto/create-customer.dto.js'
+import { CreateLoyaltyAccountDto } from './dto/create-loyalty-account.dto.js'
 import { CrmService } from './crm.service.js'
 
 @Controller('api/v1')
@@ -11,6 +14,13 @@ export class CrmController {
   constructor(private readonly crmService: CrmService) {}
 
   // ---- Customers ----
+  @Post('customers')
+  @HttpCode(201)
+  @RequirePermission('customers:create')
+  createCustomer(@Req() req: Request, @Body() dto: CreateCustomerDto) {
+    return this.crmService.createCustomer(req.authContext!, dto)
+  }
+
   @Get('customers')
   @RequirePermission('customers:view')
   listCustomers(@Req() req: Request, @Query('search') search?: string, @Query('limit') limit?: string) {
@@ -56,6 +66,13 @@ export class CrmController {
   }
 
   // ---- Loyalty ----
+  @Post('loyalty/accounts')
+  @HttpCode(201)
+  @RequirePermission('loyalty:manage')
+  createLoyaltyAccount(@Req() req: Request, @Body() dto: CreateLoyaltyAccountDto) {
+    return this.crmService.createLoyaltyAccount(req.authContext!, dto)
+  }
+
   @Get('loyalty/accounts/:id')
   @RequirePermission('customers:view')
   getLoyaltyAccount(@Req() req: Request, @Param('id') id: string) {
@@ -91,6 +108,13 @@ export class CrmController {
   }
 
   // ---- Customer credit ----
+  @Post('customer-credit-accounts')
+  @HttpCode(201)
+  @RequirePermission('credit_accounts:manage')
+  createCreditAccount(@Req() req: Request, @Body() dto: CreateCreditAccountDto) {
+    return this.crmService.createCreditAccount(req.authContext!, dto)
+  }
+
   @Get('customer-credit-accounts/:customerId')
   @RequirePermission('customers:view')
   getCreditAccount(@Req() req: Request, @Param('customerId') customerId: string) {

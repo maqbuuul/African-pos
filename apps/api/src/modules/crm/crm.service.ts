@@ -17,6 +17,9 @@ import type { GiftCardStatus } from '@hospitality-os/domain'
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import type { CreateCreditAccountDto } from './dto/create-credit-account.dto.js'
+import type { CreateCustomerDto } from './dto/create-customer.dto.js'
+import type { CreateLoyaltyAccountDto } from './dto/create-loyalty-account.dto.js'
 
 export interface FindOrCreateCustomerParams {
   phone?: string
@@ -79,6 +82,21 @@ export class CrmService {
         })
       }
       return customer
+    })
+  }
+
+  async createCustomer(authContext: AuthContext, dto: CreateCustomerDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [customer] = await db.insert(customers).values({
+        organizationId: authContext.organizationId,
+        phone: dto.phone ?? null,
+        email: dto.email ?? null,
+        firstName: dto.firstName ?? null,
+        lastName: dto.lastName ?? null,
+        notes: dto.notes ?? null,
+        allergyNotes: dto.allergyNotes ?? null,
+      }).returning()
+      return customer!
     })
   }
 
@@ -156,6 +174,18 @@ export class CrmService {
   // ---------------------------------------------------------------------------
   // Loyalty
   // ---------------------------------------------------------------------------
+  async createLoyaltyAccount(authContext: AuthContext, dto: CreateLoyaltyAccountDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [account] = await db.insert(loyaltyAccounts).values({
+        organizationId: authContext.organizationId,
+        customerId: dto.customerId,
+        tier: dto.tier ?? 'bronze',
+        points: dto.points ?? 0,
+      }).returning()
+      return account!
+    })
+  }
+
   async getLoyaltyAccount(authContext: AuthContext, id: string) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const account = await db
@@ -256,6 +286,20 @@ export class CrmService {
   // ---------------------------------------------------------------------------
   // Customer credit tab
   // ---------------------------------------------------------------------------
+  async createCreditAccount(authContext: AuthContext, dto: CreateCreditAccountDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [account] = await db.insert(customerCreditAccounts).values({
+        organizationId: authContext.organizationId,
+        customerId: dto.customerId,
+        creditLimit: dto.creditLimit,
+        currentBalance: 0,
+        currency: dto.currency ?? 'KES',
+        status: 'active',
+      }).returning()
+      return account!
+    })
+  }
+
   async getCreditAccount(authContext: AuthContext, customerId: string) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const account = await db
