@@ -21,6 +21,7 @@ import {
   ReceiptChannelSchema,
   RefundStatusSchema,
   ShiftStatusSchema,
+  StaffNotificationTypeSchema,
   TableShapeSchema,
   TableStatusSchema,
   TaxProviderSchema,
@@ -1095,6 +1096,58 @@ export const notificationPreferences = pgTable('notification_preferences', {
   check('notification_preferences_subject_type_check', enumCheck(table.subjectType, NotificationSubjectTypeSchema.options)),
 ])
 
+// Staff notifications — waiter requests, bill requests, etc.
+export const staffNotifications = pgTable('staff_notifications', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  tableId: uuid('table_id')
+    .notNull()
+    .references(() => restaurantTables.id, { onDelete: 'restrict' }),
+  notificationType: text('notification_type').notNull().default('waiter_request'),
+  reason: text('reason'),
+  status: text('status').notNull().default('pending'),
+  acknowledgedByActorId: uuid('acknowledged_by_actor_id'),
+  acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('staff_notifications_organization_id_idx').on(table.organizationId),
+  index('staff_notifications_table_id_idx').on(table.tableId),
+  index('staff_notifications_status_idx').on(table.status),
+  check('staff_notifications_notification_type_check', enumCheck(table.notificationType, StaffNotificationTypeSchema.options)),
+  check('staff_notifications_status_check', enumCheck(table.status, ['pending', 'acknowledged', 'completed', 'cancelled'])),
+])
+
+// Customer feedback — ratings and comments on order items.
+export const customerFeedback = pgTable('customer_feedback', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  orderItemId: uuid('order_item_id')
+    .notNull()
+    .references(() => orderItems.id, { onDelete: 'restrict' }),
+  productId: uuid('product_id')
+    .notNull()
+    .references(() => products.id, { onDelete: 'restrict' }),
+  rating: integer('rating').notNull(),
+  comment: text('comment'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('customer_feedback_organization_id_idx').on(table.organizationId),
+  index('customer_feedback_order_item_id_idx').on(table.orderItemId),
+  index('customer_feedback_product_id_idx').on(table.productId),
+  check('customer_feedback_rating_check', sql`${table.rating} >= 1 AND ${table.rating} <= 5`),
+])
+
 export const restaurantTenantScopedTables = [
   menus,
   menuCategories,
@@ -1125,4 +1178,6 @@ export const restaurantTenantScopedTables = [
   receipts,
   taxComplianceSubmissions,
   notificationPreferences,
+  staffNotifications,
+  customerFeedback,
 ] as const

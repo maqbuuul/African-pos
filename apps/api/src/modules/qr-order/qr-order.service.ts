@@ -3,6 +3,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
+  customerFeedback,
   menuCategories,
   menus,
   modifierGroups,
@@ -14,6 +15,7 @@ import {
   productPrices,
   products,
   restaurantTables,
+  staffNotifications,
   withTenantContext,
 } from '@hospitality-os/database'
 
@@ -49,7 +51,7 @@ export class QrOrderService {
     if (table.status === 'blocked' || table.status === 'cleaning') {
       throw new BadRequestException({ code: 'table_unavailable', message: 'table is currently unavailable' })
     }
-    return { token: await signTableSessionToken({ organizationId: table.organizationId, locationId: table.locationId, tableId: table.id }), table }
+    return { token: await signTableSessionToken({ organizationId: table.organizationId, locationId: table.locationId, tableId: table.id, qrSlug: table.qrSlug ?? '' }), table }
   }
 
   async getMenu(session: TableSessionClaims) {
@@ -176,11 +178,41 @@ export class QrOrderService {
   }
 
   async requestWaiter(session: TableSessionClaims, reason?: string) {
-    return { message: 'waiter has been notified', reason: reason ?? null }
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const [notification] = await db.insert(staffNotifications).values({
+        organizationId: session.organizationId,
+        locationId: session.locationId,
+        tableId: session.tableId,
+        notificationType: 'waiter_request',
+        reason: reason ?? null,
+        status: 'pending',
+      }).returning()
+      return { message: 'waiter has been notified', notification }
+    })
   }
 
   async submitFeedback(session: TableSessionClaims, orderItemId: string, rating: number, comment?: string) {
-    return { orderItemId, rating, comment: comment ?? null, message: 'feedback recorded' }
+    if (rating < 1 || rating > 5) {
+      throw new BadRequestException('rating must be between 1 and 5')
+    }
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const [item] = await db
+        .select({ productId: orderItems.productId })
+        .from(orderItems)
+        .where(and(eq(orderItems.id, orderItemId), eq(orderItems.organizationId, session.organizationId)))
+        .limit(1)
+      if (!item) throw new NotFoundException('order item not found')
+
+      const [feedback] = await db.insert(customerFeedback).values({
+        organizationId: session.organizationId,
+        locationId: session.locationId,
+        orderItemId,
+        productId: item.productId,
+        rating,
+        comment: comment ?? null,
+      }).returning()
+      return { orderItemId, rating, comment: comment ?? null, message: 'feedback recorded', feedback }
+    })
   }
 
   async payMpesa(session: TableSessionClaims, billId: string, customerPhone: string, idempotencyKey: string) {

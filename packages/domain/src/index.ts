@@ -214,6 +214,9 @@ export type TaxProvider = z.infer<typeof TaxProviderSchema>
 export const NotificationSubjectTypeSchema = z.enum(['staff', 'customer'])
 export type NotificationSubjectType = z.infer<typeof NotificationSubjectTypeSchema>
 
+export const StaffNotificationTypeSchema = z.enum(['waiter_request', 'bill_request', 'assistance', 'other'])
+export type StaffNotificationType = z.infer<typeof StaffNotificationTypeSchema>
+
 export const OrderStatusSchema = z.enum([
   'draft',
   'open',
