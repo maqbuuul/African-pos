@@ -1,4 +1,4 @@
-export type ActorType = 'user' | 'staff'
+export type ActorType = 'user' | 'staff' | 'customer'
 
 // Attached to the request by TenantContextMiddleware after verifying the
 // bearer JWT. Absent entirely on unauthenticated requests (public routes,

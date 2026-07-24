@@ -5,6 +5,8 @@ import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
 import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { ValidatedBody } from '../../core/validation/validated-body.decorator.js'
 import { CreateKdsStationDto } from './dto/create-kds-station.dto.js'
+import { RecordCookTimeDto } from './dto/record-cook-time.dto.js'
+import { RecordPourCostDto } from './dto/record-pour-cost.dto.js'
 import { UpdateKdsStationDto } from './dto/update-kds-station.dto.js'
 import { KdsService } from './kds.service.js'
 
@@ -51,6 +53,23 @@ export class KdsController {
     return this.kdsService.listStationTickets(req.authContext!, stationId)
   }
 
+  @Get('stations/:stationId/consolidated')
+  getConsolidatedView(@Param('stationId') stationId: string, @Req() req: Request) {
+    return this.kdsService.getConsolidatedStationView(req.authContext!, stationId)
+  }
+
+  @Get('stations/:stationId/bar-tab-summary')
+  getBarTabSummary(@Param('stationId') stationId: string, @Req() req: Request) {
+    return this.kdsService.getBarTabSummary(req.authContext!, stationId)
+  }
+
+  @Post('stations/:stationId/batch-close-tabs')
+  @HttpCode(200)
+  @RequirePermission('kds:manage_stations')
+  batchCloseTabs(@Param('stationId') stationId: string, @Req() req: Request) {
+    return this.kdsService.batchCloseTabs(req.authContext!, stationId)
+  }
+
   @Get('stations/:stationId/printable-tickets')
   printableTickets(@Param('stationId') stationId: string, @Req() req: Request) {
     return this.kdsService.getPrintableTickets(req.authContext!, stationId)
@@ -64,6 +83,29 @@ export class KdsController {
   @Get('cook-time-analytics')
   cookTimeAnalytics(@Req() req: Request, @Query('locationId') locationId?: string) {
     return this.kdsService.getCookTimeAnalytics(req.authContext!, locationId)
+  }
+
+  @Get('cook-time/learned/:stationId/:productId')
+  getLearnedCookTime(@Param('stationId') stationId: string, @Param('productId') productId: string, @Req() req: Request) {
+    return this.kdsService.getLearnedCookTime(req.authContext!, stationId, productId)
+  }
+
+  @Post('cook-time/record')
+  @HttpCode(200)
+  recordCookTime(@ValidatedBody(RecordCookTimeDto) dto: RecordCookTimeDto, @Req() req: Request) {
+    return this.kdsService.recordCookTime(req.authContext!, dto.orderItemId, dto.actualPrepSeconds)
+  }
+
+  @Post('orders/:orderId/flag-rush')
+  @HttpCode(200)
+  flagRush(@Param('orderId') orderId: string, @Req() req: Request) {
+    return this.kdsService.flagRushOrder(req.authContext!, orderId)
+  }
+
+  @Post('orders/:orderId/flag-vip')
+  @HttpCode(200)
+  flagVip(@Param('orderId') orderId: string, @Req() req: Request) {
+    return this.kdsService.flagVipOrder(req.authContext!, orderId)
   }
 
   @Post('tickets/:ticketItemId/accept')
@@ -100,5 +142,11 @@ export class KdsController {
   @HttpCode(200)
   acknowledgeVoid(@Param('ticketItemId') ticketItemId: string, @Req() req: Request) {
     return this.kdsService.acknowledgeVoid(req.authContext!, ticketItemId)
+  }
+
+  @Post('tickets/:ticketItemId/pour-cost')
+  @HttpCode(200)
+  recordPourCost(@Param('ticketItemId') ticketItemId: string, @ValidatedBody(RecordPourCostDto) dto: RecordPourCostDto, @Req() req: Request) {
+    return this.kdsService.recordPourCost(req.authContext!, ticketItemId, dto.actualPouredMl, dto.theoreticalMl)
   }
 }

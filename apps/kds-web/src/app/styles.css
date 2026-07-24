@@ -257,6 +257,26 @@ button:disabled {
   border-color: rgba(248, 113, 113, 0.5);
 }
 
+.ticket-card--rush {
+  border-color: rgba(251, 191, 36, 0.6);
+}
+
+.ticket-card--vip {
+  border-color: rgba(234, 179, 8, 0.7);
+}
+
+.vip-star {
+  color: #fbbf24;
+  margin-left: 0.4rem;
+  font-size: 1.1em;
+}
+
+.pill--info {
+  background: rgba(30, 64, 175, 0.32);
+  color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.35);
+}
+
 .session-card {
   display: grid;
   gap: 0.25rem;

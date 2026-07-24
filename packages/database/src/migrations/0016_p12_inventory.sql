@@ -110,6 +110,7 @@ CREATE TABLE "purchase_orders" (
 --> statement-breakpoint
 CREATE TABLE "purchase_order_items" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+  "organization_id" uuid NOT NULL,
   "purchase_order_id" uuid NOT NULL,
   "inventory_item_id" uuid NOT NULL,
   "ordered_quantity" real NOT NULL,
@@ -186,6 +187,7 @@ CREATE TABLE "recipes" (
 --> statement-breakpoint
 CREATE TABLE "recipe_ingredients" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+  "organization_id" uuid NOT NULL,
   "recipe_id" uuid NOT NULL,
   "inventory_item_id" uuid NOT NULL,
   "quantity" real NOT NULL,
@@ -228,6 +230,7 @@ ALTER TABLE "stock_movements" ADD CONSTRAINT "stock_movements_stock_location_id_
 ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_supplier_id_suppliers_id_fk" FOREIGN KEY ("supplier_id") REFERENCES "public"."suppliers"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "purchase_order_items" ADD CONSTRAINT "purchase_order_items_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_order_items" ADD CONSTRAINT "purchase_order_items_purchase_order_id_purchase_orders_id_fk" FOREIGN KEY ("purchase_order_id") REFERENCES "public"."purchase_orders"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "purchase_order_items" ADD CONSTRAINT "purchase_order_items_inventory_item_id_inventory_items_id_fk" FOREIGN KEY ("inventory_item_id") REFERENCES "public"."inventory_items"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "goods_receipts" ADD CONSTRAINT "goods_receipts_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -244,6 +247,7 @@ ALTER TABLE "stock_adjustments" ADD CONSTRAINT "stock_adjustments_stock_count_id
 ALTER TABLE "recipes" ADD CONSTRAINT "recipes_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recipes" ADD CONSTRAINT "recipes_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recipes" ADD CONSTRAINT "recipes_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "recipe_ingredients" ADD CONSTRAINT "recipe_ingredients_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recipe_ingredients" ADD CONSTRAINT "recipe_ingredients_recipe_id_recipes_id_fk" FOREIGN KEY ("recipe_id") REFERENCES "public"."recipes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "recipe_ingredients" ADD CONSTRAINT "recipe_ingredients_inventory_item_id_inventory_items_id_fk" FOREIGN KEY ("inventory_item_id") REFERENCES "public"."inventory_items"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "wastage_events" ADD CONSTRAINT "wastage_events_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -267,6 +271,7 @@ CREATE INDEX "stock_movements_moved_at_idx" ON "stock_movements" USING btree ("m
 CREATE INDEX "purchase_orders_organization_id_idx" ON "purchase_orders" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "purchase_orders_location_id_idx" ON "purchase_orders" USING btree ("location_id");--> statement-breakpoint
 CREATE INDEX "purchase_orders_supplier_id_idx" ON "purchase_orders" USING btree ("supplier_id");--> statement-breakpoint
+CREATE INDEX "purchase_order_items_organization_id_idx" ON "purchase_order_items" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "purchase_order_items_po_id_idx" ON "purchase_order_items" USING btree ("purchase_order_id");--> statement-breakpoint
 CREATE INDEX "purchase_order_items_item_id_idx" ON "purchase_order_items" USING btree ("inventory_item_id");--> statement-breakpoint
 CREATE INDEX "goods_receipts_organization_id_idx" ON "goods_receipts" USING btree ("organization_id");--> statement-breakpoint
@@ -279,6 +284,7 @@ CREATE INDEX "stock_adjustments_item_id_idx" ON "stock_adjustments" USING btree 
 CREATE INDEX "stock_adjustments_count_id_idx" ON "stock_adjustments" USING btree ("stock_count_id");--> statement-breakpoint
 CREATE INDEX "recipes_organization_id_idx" ON "recipes" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "recipes_product_id_idx" ON "recipes" USING btree ("product_id");--> statement-breakpoint
+CREATE INDEX "recipe_ingredients_organization_id_idx" ON "recipe_ingredients" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "recipe_ingredients_recipe_id_idx" ON "recipe_ingredients" USING btree ("recipe_id");--> statement-breakpoint
 CREATE INDEX "recipe_ingredients_item_id_idx" ON "recipe_ingredients" USING btree ("inventory_item_id");--> statement-breakpoint
 CREATE INDEX "wastage_events_organization_id_idx" ON "wastage_events" USING btree ("organization_id");--> statement-breakpoint

@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, inArray } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import { menuCategories, menus, withTenantContext } from '@hospitality-os/database'
+import { menuCategories, menus, withTenantContext, type Db } from '@hospitality-os/database'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
@@ -117,5 +117,12 @@ export class CategoriesService {
 
       await db.delete(menuCategories).where(eq(menuCategories.id, id))
     })
+  }
+
+  // db-first: callable from another module's already-open transaction
+  // (e.g. KdsService grouping fired items by station).
+  async getCategoriesByIds(db: Db, organizationId: string, ids: string[]) {
+    if (!ids.length) return []
+    return db.select().from(menuCategories).where(and(eq(menuCategories.organizationId, organizationId), inArray(menuCategories.id, ids)))
   }
 }

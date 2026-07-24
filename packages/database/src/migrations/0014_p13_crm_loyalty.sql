@@ -1,6 +1,7 @@
 -- P13 — CRM + Loyalty (docs/prd/13-crm-loyalty.md, BUILD_WORKFLOW.md P13).
 -- Adds: customers, customer_identities, customer_tags, loyalty_accounts,
--- loyalty_events, gift_cards, customer_credit_accounts, customer_feedback.
+-- loyalty_events, gift_cards, customer_credit_accounts.
+-- (customer_feedback is created by 0012_p10_staff_notifications_feedback.sql.)
 -- RLS on all tables: same pattern as 0000_shared_foundation.sql.
 CREATE TABLE "customers" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -90,25 +91,13 @@ CREATE TABLE "customer_credit_accounts" (
 	CONSTRAINT "customer_credit_accounts_status_check" CHECK ("customer_credit_accounts"."status" in ('active', 'frozen', 'closed'))
 );
 --> statement-breakpoint
-CREATE TABLE "customer_feedback" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"organization_id" uuid NOT NULL,
-	"location_id" uuid NOT NULL,
-	"customer_id" uuid,
-	"order_id" uuid,
-	"order_item_id" uuid,
-	"source" text NOT NULL,
-	"rating" integer,
-	"comment" text,
-	"external_review_id" text,
-	"source_url" text,
-	"sentiment" text,
-	"is_negative" boolean DEFAULT false NOT NULL,
-	"alert_sent" boolean DEFAULT false NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "customer_feedback_external_review_id_key" UNIQUE("external_review_id")
-);
---> statement-breakpoint
+-- customer_feedback is created (with RLS + indexes) by
+-- 0012_p10_staff_notifications_feedback.sql, which runs before this
+-- migration and already owns this table — see that file's header comment.
+-- Creating it again here (without IF NOT EXISTS, unlike 0012) fails with
+-- "relation already exists" the moment a fresh clone runs migrations in
+-- order, so it's removed rather than guarded: 0012 is the single source of
+-- truth for this table's shape.
 ALTER TABLE "customers" ADD CONSTRAINT "customers_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_identities" ADD CONSTRAINT "customer_identities_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_identities" ADD CONSTRAINT "customer_identities_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "public"."customers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -123,8 +112,6 @@ ALTER TABLE "gift_cards" ADD CONSTRAINT "gift_cards_organization_id_organization
 ALTER TABLE "gift_cards" ADD CONSTRAINT "gift_cards_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_credit_accounts" ADD CONSTRAINT "customer_credit_accounts_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "customer_credit_accounts" ADD CONSTRAINT "customer_credit_accounts_customer_id_customers_id_fk" FOREIGN KEY ("customer_id") REFERENCES "public"."customers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_feedback" ADD CONSTRAINT "customer_feedback_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "customer_feedback" ADD CONSTRAINT "customer_feedback_location_id_locations_id_fk" FOREIGN KEY ("location_id") REFERENCES "public"."locations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "customers_organization_id_idx" ON "customers" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "customers_phone_idx" ON "customers" USING btree ("phone");--> statement-breakpoint
 CREATE INDEX "customers_email_idx" ON "customers" USING btree ("email");--> statement-breakpoint
@@ -142,9 +129,6 @@ CREATE INDEX "gift_cards_organization_id_idx" ON "gift_cards" USING btree ("orga
 CREATE UNIQUE INDEX "gift_cards_code_key" ON "gift_cards" USING btree ("code");--> statement-breakpoint
 CREATE INDEX "customer_credit_accounts_organization_id_idx" ON "customer_credit_accounts" USING btree ("organization_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "customer_credit_accounts_customer_id_key" ON "customer_credit_accounts" USING btree ("customer_id");--> statement-breakpoint
-CREATE INDEX "customer_feedback_organization_id_idx" ON "customer_feedback" USING btree ("organization_id");--> statement-breakpoint
-CREATE INDEX "customer_feedback_location_id_idx" ON "customer_feedback" USING btree ("location_id");--> statement-breakpoint
-CREATE INDEX "customer_feedback_customer_id_idx" ON "customer_feedback" USING btree ("customer_id");--> statement-breakpoint
 CREATE TRIGGER customers_set_updated_at BEFORE UPDATE ON "customers" FOR EACH ROW EXECUTE FUNCTION set_updated_at();--> statement-breakpoint
 CREATE TRIGGER loyalty_accounts_set_updated_at BEFORE UPDATE ON "loyalty_accounts" FOR EACH ROW EXECUTE FUNCTION set_updated_at();--> statement-breakpoint
 CREATE TRIGGER gift_cards_set_updated_at BEFORE UPDATE ON "gift_cards" FOR EACH ROW EXECUTE FUNCTION set_updated_at();--> statement-breakpoint
@@ -182,10 +166,5 @@ CREATE POLICY gift_cards_tenant_isolation ON "gift_cards" FOR ALL
 ALTER TABLE "customer_credit_accounts" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "customer_credit_accounts" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE POLICY customer_credit_accounts_tenant_isolation ON "customer_credit_accounts" FOR ALL
-  USING ("organization_id" = app_current_organization_id())
-  WITH CHECK ("organization_id" = app_current_organization_id());--> statement-breakpoint
-ALTER TABLE "customer_feedback" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
-ALTER TABLE "customer_feedback" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-CREATE POLICY customer_feedback_tenant_isolation ON "customer_feedback" FOR ALL
   USING ("organization_id" = app_current_organization_id())
   WITH CHECK ("organization_id" = app_current_organization_id());

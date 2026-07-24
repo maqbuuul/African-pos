@@ -1,12 +1,14 @@
+import { randomUUID } from 'node:crypto'
+
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
+  billItems,
   bills,
   decryptCredentials,
   encryptCredentials,
   integrationConnections,
-  orders,
   paymentIntents,
   payments,
   refunds,
@@ -18,12 +20,16 @@ import { PAYMENT_INTENT_STATUS_TRANSITIONS, type PaymentIntentStatus } from '@ho
 import { getPaymentAdapter } from '@hospitality-os/integrations'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
+import { OutboxService } from '../../core/events/outbox.service.js'
 import { IdempotencyService } from '../../core/idempotency/idempotency.service.js'
 import { ApprovalsService } from '../../core/permissions/approvals.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
 import { ReceiptsService } from '../notifications/receipts.service.js'
+import { OrdersService } from '../orders/orders.service.js'
+import { ProductsService } from '../products/products.service.js'
 import type { TakeBankTransferPaymentDto } from './dto/take-bank-transfer-payment.dto.js'
 import type { TakeCashPaymentDto } from './dto/take-cash-payment.dto.js'
 import type { TakeCardPaymentDto } from './dto/take-card-payment.dto.js'
@@ -31,6 +37,8 @@ import type { TakeCardTerminalPaymentDto } from './dto/take-card-terminal-paymen
 import type { TakeMpesaPaymentDto } from './dto/take-mpesa-payment.dto.js'
 import type { RequestRefundDto } from './dto/request-refund.dto.js'
 import type { ConnectIntegrationDto } from './dto/connect-integration.dto.js'
+import type { OpenBarTabDto } from './dto/open-bar-tab.dto.js'
+import type { ChargeBarTabDto } from './dto/charge-bar-tab.dto.js'
 
 // Per-module approval-request action key for refunds (ApprovalsController.resolve requires
 // the resolver to hold a permission whose key equals the approval action literally —
@@ -62,7 +70,29 @@ export class PaymentsService {
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
     @Inject(ReceiptsService) private readonly receiptsService: ReceiptsService,
+    @Inject(OutboxService) private readonly outbox: OutboxService,
+    @Inject(OrdersService) private readonly ordersService: OrdersService,
+    @Inject(ProductsService) private readonly productsService: ProductsService,
+    @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
   ) {}
+
+  // Every payment-confirmation path (cash, card, mobile money, bank transfer)
+  // calls this once its `payments` row is committed, inside the same
+  // transaction, so PaymentConfirmed always reflects money genuinely captured.
+  private async emitPaymentConfirmed(
+    db: Db,
+    payment: { id: string; organizationId: string; locationId: string; providerReference: string | null; amount: number },
+  ): Promise<void> {
+    await this.outbox.persistAndEmit(db, {
+      eventType: 'PaymentConfirmed',
+      organizationId: payment.organizationId,
+      locationId: payment.locationId,
+      entityType: 'payment',
+      entityId: payment.id,
+      data: { providerReference: payment.providerReference, amount: payment.amount },
+      occurredAt: new Date(),
+    })
+  }
 
   // ---------------------------------------------------------------------------
   // Cash payment — immediate confirmation, no external provider call.
@@ -146,6 +176,7 @@ export class PaymentsService {
       }
 
       await this.settleBillIfFullyPaid(db, billId, authContext.organizationId)
+      await this.emitPaymentConfirmed(db, payment)
       return payment
     })
 
@@ -255,6 +286,8 @@ export class PaymentsService {
         return existing
       }
 
+      const surchargeAmount = await this.computeCardSurcharge(db, authContext.organizationId, billId)
+
       const { credentials } = await this.loadIntegrationCredentials(
         db,
         authContext.organizationId,
@@ -273,6 +306,7 @@ export class PaymentsService {
           provider: 'paystack',
           amount: dto.amount,
           currency: dto.currency,
+          surchargeAmount: surchargeAmount > 0 ? surchargeAmount : null,
           idempotencyKey: dto.idempotencyKey,
           customerEmail: dto.customerEmail,
           expiresAt: new Date(Date.now() + PAYSTACK_INTENT_TTL_MS),
@@ -308,7 +342,7 @@ export class PaymentsService {
         .returning()
       if (!updated) throw new Error('failed to update Paystack intent to processing')
 
-      return updated
+      return { ...updated, surchargeAmount, cashAmount: bill.totalAmount }
     })
   }
 
@@ -331,6 +365,8 @@ export class PaymentsService {
         return existing
       }
 
+      const surchargeAmount = await this.computeCardSurcharge(db, authContext.organizationId, billId)
+
       const [intent] = await db
         .insert(paymentIntents)
         .values({
@@ -342,6 +378,7 @@ export class PaymentsService {
           provider: 'manual',
           amount: dto.amount,
           currency: dto.currency,
+          surchargeAmount: surchargeAmount > 0 ? surchargeAmount : null,
           idempotencyKey: dto.idempotencyKey,
           providerReference: dto.terminalReference,
           processedByActorId: authContext.actorId,
@@ -367,6 +404,7 @@ export class PaymentsService {
           providerReference: dto.terminalReference,
           amount: dto.amount,
           currency: dto.currency,
+          surchargeAmount: surchargeAmount > 0 ? surchargeAmount : null,
           idempotencyKey: dto.idempotencyKey,
           processedByActorId: authContext.actorId,
         })
@@ -386,6 +424,7 @@ export class PaymentsService {
       }
 
       await this.settleBillIfFullyPaid(db, billId, authContext.organizationId)
+      await this.emitPaymentConfirmed(db, payment)
       return payment
     })
 
@@ -482,6 +521,7 @@ export class PaymentsService {
       }
 
       await this.settleBillIfFullyPaid(db, billId, authContext.organizationId)
+      await this.emitPaymentConfirmed(db, payment)
       return payment
     })
 
@@ -588,10 +628,11 @@ export class PaymentsService {
 
       await this.settleBillIfFullyPaid(db, intent.billId, orgId)
 
-      // Module 18 fraud check: compare the incoming paybill/till number against
-      // the org's registered numbers stored in integration_connections.metadata.
-      // Alert only — the payment is confirmed regardless of the outcome.
-      await this.checkMpesaFraud(db, orgId, intent.locationId, result, payment.id, intent.billId)
+      // Module 18 fraud check: compare the incoming sender phone and paybill/
+      // till number against the org's registered numbers stored in
+      // integration_connections.metadata. Alert only — the payment is confirmed
+      // regardless of the outcome.
+      await this.checkMpesaFraud(db, orgId, intent.locationId, result, payment)
 
       await this.auditLog.record({
         organizationId: orgId,
@@ -602,6 +643,8 @@ export class PaymentsService {
         entityId: payment.id,
         newValue: { providerReference: result.providerReference, amount: intent.amount },
       })
+
+      await this.emitPaymentConfirmed(db, payment)
 
       return { status: 'confirmed', paymentId: payment.id }
     })
@@ -703,6 +746,8 @@ export class PaymentsService {
         entityId: payment.id,
         newValue: { providerReference: result.providerReference, amount: intent.amount },
       })
+
+      await this.emitPaymentConfirmed(db, payment)
 
       return { status: 'confirmed', paymentId: payment.id }
     })
@@ -867,6 +912,221 @@ export class PaymentsService {
   }
 
   // ---------------------------------------------------------------------------
+  // Bar tabs — card pre-authorization / mobile-money deposit hold (P7).
+  // openTab creates a held intent; chargeTab records charges against it;
+  // settleTab captures the full amount and transitions to confirmed.
+  // ---------------------------------------------------------------------------
+
+  // POST /api/v1/bills/:billId/tabs/open
+  async openTab(authContext: AuthContext, billId: string, dto: OpenBarTabDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const bill = await this.loadBill(db, authContext.organizationId, billId)
+
+      const existing = await this.idempotency.findExistingIntent(
+        db,
+        authContext.organizationId,
+        dto.idempotencyKey,
+      )
+      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
+        return existing
+      }
+
+      const tabId = randomUUID()
+
+      const [intent] = await db
+        .insert(paymentIntents)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId: bill.locationId,
+          orderId: bill.orderId,
+          billId,
+          method: 'card',
+          provider: 'none',
+          amount: dto.amount,
+          currency: dto.currency,
+          status: 'held',
+          tabId,
+          idempotencyKey: dto.idempotencyKey,
+          processedByActorId: authContext.actorId,
+        })
+        .returning()
+      if (!intent) throw new Error('failed to create bar tab intent')
+
+      return intent
+    })
+  }
+
+  async chargeTab(authContext: AuthContext, tabId: string, dto: ChargeBarTabDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [intent] = await db
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tabId, tabId),
+            eq(paymentIntents.organizationId, authContext.organizationId),
+          ),
+        )
+      if (!intent) {
+        throw new NotFoundException({
+          code: 'bar_tab_not_found',
+          message: 'bar tab not found',
+        })
+      }
+      if (intent.status !== 'held') {
+        throw new BadRequestException({
+          code: 'bar_tab_not_held',
+          message: `bar tab is in status "${intent.status}" — must be held to charge`,
+        })
+      }
+
+      const [payment] = await db
+        .insert(payments)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId: intent.locationId,
+          orderId: dto.orderId,
+          billId: intent.billId,
+          paymentIntentId: intent.id,
+          method: 'card',
+          provider: 'none',
+          amount: dto.amount,
+          currency: dto.currency,
+          idempotencyKey: `charge-${tabId}-${dto.orderId}-${dto.amount}`,
+          processedByActorId: authContext.actorId,
+        })
+        .returning()
+      if (!payment) throw new Error('failed to create bar tab charge payment')
+
+      await this.emitPaymentConfirmed(db, payment)
+
+      return payment
+    })
+  }
+
+  async settleTab(authContext: AuthContext, tabId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [intent] = await db
+        .select()
+        .from(paymentIntents)
+        .where(
+          and(
+            eq(paymentIntents.tabId, tabId),
+            eq(paymentIntents.organizationId, authContext.organizationId),
+          ),
+        )
+      if (!intent) {
+        throw new NotFoundException({
+          code: 'bar_tab_not_found',
+          message: 'bar tab not found',
+        })
+      }
+      if (intent.status !== 'held') {
+        throw new BadRequestException({
+          code: 'bar_tab_not_held',
+          message: `bar tab is in status "${intent.status}" — must be held to settle`,
+        })
+      }
+
+      const [updated] = await db
+        .update(paymentIntents)
+        .set({ status: 'confirmed', updatedAt: sql`now()` })
+        .where(eq(paymentIntents.id, intent.id))
+        .returning()
+      if (!updated) throw new Error('failed to settle bar tab')
+
+      const existingPayments = await db
+        .select()
+        .from(payments)
+        .where(
+          and(
+            eq(payments.paymentIntentId, intent.id),
+            eq(payments.organizationId, authContext.organizationId),
+          ),
+        )
+
+      if (!existingPayments.length) {
+        const [payment] = await db.insert(payments).values({
+          organizationId: authContext.organizationId,
+          locationId: intent.locationId,
+          orderId: intent.orderId,
+          billId: intent.billId,
+          paymentIntentId: intent.id,
+          method: 'card',
+          provider: 'none',
+          amount: intent.amount,
+          currency: intent.currency,
+          idempotencyKey: `settle-${tabId}`,
+          processedByActorId: authContext.actorId,
+        }).returning()
+        if (!payment) throw new Error('failed to create bar tab settlement payment')
+        await this.emitPaymentConfirmed(db, payment)
+      }
+
+      return updated
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Split-check WhatsApp payment link — generates a signed JWT token that
+  // allows a customer to pay their share via a self-service payment page.
+  // ---------------------------------------------------------------------------
+  async generateSplitPaymentLink(
+    authContext: AuthContext,
+    orderId: string,
+    billId: string,
+    splitId: string,
+  ) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [bill] = await db
+        .select()
+        .from(bills)
+        .where(
+          and(eq(bills.id, billId), eq(bills.organizationId, authContext.organizationId)),
+        )
+      if (!bill) {
+        throw new NotFoundException({ code: 'bill_not_found', message: 'bill not found' })
+      }
+
+      const { signPaymentLinkToken } = await import('./payment-link-jwt.js')
+      const token = await signPaymentLinkToken({
+        organizationId: authContext.organizationId,
+        orderId,
+        billId,
+        splitId,
+        tokenType: 'payment_link',
+      })
+
+      const [intent] = await db
+        .insert(paymentIntents)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId: bill.locationId,
+          orderId,
+          billId,
+          method: 'mpesa',
+          provider: 'mpesa_daraja',
+          amount: bill.totalAmount,
+          currency: bill.currency,
+          paymentLinkToken: token,
+          idempotencyKey: `payment-link-${splitId}`,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        })
+        .returning()
+      if (!intent) throw new Error('failed to create payment link intent')
+
+      const baseUrl = process.env['PUBLIC_URL'] ?? 'https://pay.hospitality-os.app'
+      return {
+        url: `${baseUrl}/pay/${token}`,
+        token,
+        intentId: intent.id,
+        amount: bill.totalAmount,
+        currency: bill.currency,
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
   // Cancel a payment intent — only valid from pending/processing states
   // (PAYMENT_INTENT_STATUS_TRANSITIONS). Cancellation does NOT void an already-
   // confirmed payment; use requestRefund for that.
@@ -936,6 +1196,28 @@ export class PaymentsService {
             eq(payments.organizationId, authContext.organizationId),
           ),
         )
+    })
+  }
+
+  // Amount still owed on a bill — totalAmount minus everything already
+  // confirmed. Callers charging a bill in full (e.g. QR self-checkout) must
+  // derive the amount to charge from here, never accept it from the client.
+  async getOutstandingBalance(authContext: AuthContext, billId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const bill = await this.loadBillForRead(db, authContext.organizationId, billId)
+      const [paidRow] = await db
+        .select({ paid: sql<number>`COALESCE(SUM(${payments.amount}), 0)` })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.billId, billId),
+            eq(payments.organizationId, authContext.organizationId),
+            eq(payments.status, 'confirmed'),
+          ),
+        )
+      const amountPaid = Number(paidRow?.paid ?? 0)
+      const outstandingAmount = Math.max(bill.totalAmount - amountPaid, 0)
+      return { billId, currency: bill.currency, totalAmount: bill.totalAmount, amountPaid, outstandingAmount }
     })
   }
 
@@ -1017,6 +1299,31 @@ export class PaymentsService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  // Compute card surcharge from the bill's items' cardSurchargePct.
+  // Returns 0 if no products on the bill have a surcharge configured.
+  // billItems/orderItems are orders-owned, products is products-owned —
+  // both foreign reads go through their owning service.
+  private async computeCardSurcharge(db: Db, organizationId: string, billId: string): Promise<number> {
+    try {
+      const billItemsForBill = await this.ordersService.getProductIdsForBillItems(db, organizationId, billId)
+      if (!billItemsForBill.length) return 0
+
+      const productIds = [...new Set(billItemsForBill.map((bi) => bi.productId))]
+      const productsForBill = await this.productsService.getProductsByIds(db, organizationId, productIds)
+      const productMap = new Map(productsForBill.map((p) => [p.id, p]))
+
+      let surcharge = 0
+      for (const bi of billItemsForBill) {
+        const product = productMap.get(bi.productId)
+        if (!product?.cardSurchargePct) continue
+        surcharge += Math.round(bi.allocatedAmount * product.cardSurchargePct / 100)
+      }
+      return surcharge
+    } catch {
+      return 0
+    }
+  }
 
   // Load bill, assert org ownership, and block payments on terminal states.
   private async loadBill(db: Db, organizationId: string, billId: string) {
@@ -1119,8 +1426,11 @@ export class PaymentsService {
   }
 
   // After any payment confirmation: sum all confirmed payments for the bill.
-  // If >= bill.totalAmount, mark bill paid. Then check if every bill on the
-  // order is paid — if so, close the order (P5 handoff PRD 07).
+  // If >= bill.totalAmount, mark bill paid via OrdersService (bills/orders
+  // are orders-owned — see orders.module.ts's `owns` manifest — so the
+  // status writes and their ORDER_STATUS_TRANSITIONS validation live there,
+  // not duplicated here). Then, if every bill on the order is now paid,
+  // close the order (P5 handoff PRD 07).
   private async settleBillIfFullyPaid(
     db: Db,
     billId: string,
@@ -1146,10 +1456,8 @@ export class PaymentsService {
     const totalConfirmed = confirmedPayments.reduce((sum, p) => sum + p.amount, 0)
     if (totalConfirmed < bill.totalAmount) return
 
-    await db
-      .update(bills)
-      .set({ status: 'paid', paidAt: sql`now()`, updatedAt: sql`now()` })
-      .where(eq(bills.id, billId))
+    const settlement = await this.ordersService.markBillFullyPaid(db, organizationId, billId)
+    if (!settlement) return
 
     // P9 — Trigger receipt generation when a bill is fully paid.
     // Receipt generation is best-effort from the settlement flow; failures do
@@ -1175,62 +1483,105 @@ export class PaymentsService {
       }
     }
 
-    // Check if every bill on the order is now paid.
-    const allOrderBills = await db
-      .select()
-      .from(bills)
-      .where(and(eq(bills.orderId, bill.orderId), eq(bills.organizationId, organizationId)))
-
-    const allPaid = allOrderBills.every((b) => (b.id === billId ? true : b.status === 'paid'))
-    if (allPaid) {
-      await db
-        .update(orders)
-        .set({ status: 'paid', closedAt: sql`now()`, updatedAt: sql`now()` })
-        .where(eq(orders.id, bill.orderId))
+    if (settlement.allBillsOnOrderPaid) {
+      await this.ordersService.applyPaymentCompletion(db, organizationId, settlement.orderId)
     }
   }
 
-  // Module 18 fraud check: compare the incoming paybill/till number against the
-  // list of numbers registered on the org's M-Pesa integration. Logs a fraud alert
-  // audit event when a mismatch is found — the payment is NOT blocked.
+  // Module 18 fraud check: compare the incoming sender phone and paybill/till
+  // number against the org's registered numbers stored in
+  // integration_connections.metadata. Sets fraudAlert on the payment row when a
+  // mismatch is found and creates a staff notification for the manager.
+  // The payment is NOT blocked — alert only.
   private async checkMpesaFraud(
     db: Db,
     orgId: string,
     locationId: string,
     result: { providerReference: string; metadata?: Record<string, unknown> },
-    paymentId: string,
-    billId: string,
+    payment: Record<string, unknown>,
   ): Promise<void> {
     try {
       const conn = await this.findActiveConnection(db, orgId, 'mpesa_daraja')
       if (!conn?.metadata) return
 
-      const meta = conn.metadata as { registeredNumbers?: unknown }
-      if (!Array.isArray(meta.registeredNumbers)) return
+      const meta = conn.metadata as { registeredNumbers?: unknown; registeredPhones?: unknown }
+      const registeredNumbers = Array.isArray(meta.registeredNumbers)
+        ? (meta.registeredNumbers as string[])
+        : []
+      const registeredPhones = Array.isArray(meta.registeredPhones)
+        ? (meta.registeredPhones as string[])
+        : []
 
-      const registeredNumbers = meta.registeredNumbers as string[]
+      if (!registeredNumbers.length && !registeredPhones.length) return
+
       const incomingShortCode = result.metadata?.['BusinessShortCode'] as string | undefined
-      if (!incomingShortCode) return
+      const incomingPhone = (result.metadata?.['MSISDN'] ??
+        result.metadata?.['customerPhone'] ??
+        result.metadata?.['SenderPhone']) as string | undefined
 
-      if (!registeredNumbers.includes(incomingShortCode)) {
+      const shortCodeMismatch =
+        incomingShortCode && registeredNumbers.length > 0
+          ? !registeredNumbers.includes(incomingShortCode)
+          : false
+      const phoneMismatch =
+        incomingPhone && registeredPhones.length > 0
+          ? !registeredPhones.includes(incomingPhone)
+          : false
+
+      if (shortCodeMismatch || phoneMismatch) {
+        await db
+          .update(payments)
+          .set({ fraudAlert: true, updatedAt: sql`now()` })
+          .where(eq(payments.id, payment['id'] as string))
+
         await this.auditLog.record({
           organizationId: orgId,
           locationId,
           actorType: 'system',
           action: 'payment.mpesa.fraud_alert',
           entityType: 'payment',
-          entityId: paymentId,
+          entityId: payment['id'] as string,
           newValue: {
             providerReference: result.providerReference,
-            detectedShortCode: incomingShortCode,
+            detectedShortCode: incomingShortCode ?? null,
+            detectedPhone: incomingPhone ?? null,
             registeredNumbers,
-            billId,
+            registeredPhones,
+            billId: payment['billId'],
           },
         })
+
+        await this.createFraudNotification(db, orgId, locationId, payment, incomingShortCode, incomingPhone)
       }
     } catch {
       // Fraud check is best-effort — a failure here must never block or roll back
       // a confirmed payment. Silently swallow and let the audit trail stand as-is.
+    }
+  }
+
+  private async createFraudNotification(
+    db: Db,
+    orgId: string,
+    locationId: string,
+    payment: Record<string, unknown>,
+    detectedShortCode: string | undefined,
+    detectedPhone: string | undefined,
+  ): Promise<void> {
+    try {
+      const messageParts: string[] = ['M-Pesa fraud alert']
+      if (detectedShortCode) messageParts.push(`unrecognized till/paybill: ${detectedShortCode}`)
+      if (detectedPhone) messageParts.push(`unrecognized sender phone: ${detectedPhone}`)
+      messageParts.push(`payment: ${payment['id'] as string}`)
+
+      await this.staffNotifications.create(db, {
+        organizationId: orgId,
+        locationId,
+        notificationType: 'fraud_alert',
+        message: messageParts.join(' — '),
+        channel: 'in_app',
+      })
+    } catch {
+      // Notification creation is best-effort — must not block payment processing.
     }
   }
 

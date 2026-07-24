@@ -4,15 +4,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   cashDrawerAdjustments,
   cashDrawerSessions,
   orders,
+  paymentIntents,
   payments,
   refunds,
   shifts,
+  syncOperations,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -25,6 +27,7 @@ import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
 import type { AdjustDrawerDto } from './dto/adjust-drawer.dto.js'
 import type { CloseShiftDto } from './dto/close-shift.dto.js'
 import type { OpenShiftDto } from './dto/open-shift.dto.js'
@@ -37,6 +40,7 @@ export class ShiftsService {
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
+    @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -127,6 +131,69 @@ export class ShiftsService {
         })
       }
 
+      if (!dto.force) {
+        const blocking: string[] = []
+
+        const openOrders = await db
+          .select({ id: orders.id })
+          .from(orders)
+          .where(
+            and(
+              eq(orders.locationId, shift.locationId),
+              eq(orders.organizationId, authContext.organizationId),
+              ne(orders.status, 'paid'),
+              ne(orders.status, 'voided'),
+              ne(orders.status, 'refunded'),
+            ),
+          )
+          .limit(1)
+        if (openOrders.length > 0) blocking.push('open_orders')
+
+        const pendingPayments = await db
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.locationId, shift.locationId),
+              eq(paymentIntents.organizationId, authContext.organizationId),
+              inArray(paymentIntents.status, ['pending', 'processing']),
+            ),
+          )
+          .limit(1)
+        if (pendingPayments.length > 0) blocking.push('pending_payments')
+
+        const [session] = await db
+          .select()
+          .from(cashDrawerSessions)
+          .where(
+            and(
+              eq(cashDrawerSessions.shiftId, shiftId),
+              eq(cashDrawerSessions.organizationId, authContext.organizationId),
+            ),
+          )
+        if (session && session.countedAmount === null) blocking.push('uncounted_drawer')
+
+        const unsynced = await db
+          .select({ id: syncOperations.id })
+          .from(syncOperations)
+          .where(
+            and(
+              eq(syncOperations.organizationId, authContext.organizationId),
+              eq(syncOperations.status, 'pending'),
+            ),
+          )
+          .limit(1)
+        if (unsynced.length > 0) blocking.push('unsynced_events')
+
+        if (blocking.length > 0) {
+          throw new BadRequestException({
+            code: 'shift_close_blocked',
+            message: `Cannot close shift: ${blocking.join(', ')}. Use force=true to override.`,
+            blocking,
+          })
+        }
+      }
+
       await db
         .update(shifts)
         .set({ status: 'closing', updatedAt: sql`now()` })
@@ -195,6 +262,26 @@ export class ShiftsService {
           ),
         )
 
+      const [drawerSession] = await db
+        .select()
+        .from(cashDrawerSessions)
+        .where(
+          and(
+            eq(cashDrawerSessions.shiftId, shiftId),
+            eq(cashDrawerSessions.organizationId, authContext.organizationId),
+          ),
+        )
+
+      const changeErrorAlert = drawerSession != null && drawerSession.changeErrorCount >= 3
+      if (changeErrorAlert) {
+        await this.staffNotifications.create(db, {
+          organizationId: authContext.organizationId,
+          locationId: shift.locationId,
+          notificationType: 'change_error_alert',
+          message: `Cashier made ${drawerSession.changeErrorCount} change-calculation errors this shift (shift ${shiftId}). Manager review recommended.`,
+        })
+      }
+
       await this.auditLog.record({
         organizationId: authContext.organizationId,
         locationId: shift.locationId,
@@ -209,10 +296,12 @@ export class ShiftsService {
           variance,
           exceedsThreshold,
           varianceReason: dto.varianceReason ?? null,
+          changeErrorCount: drawerSession?.changeErrorCount ?? 0,
+          changeErrorAlert,
         },
       })
 
-      return { shift: { ...shift, status: 'closed', closeReport }, variance }
+      return { shift: { ...shift, status: 'closed', closeReport }, variance, changeErrorAlert }
     })
   }
 

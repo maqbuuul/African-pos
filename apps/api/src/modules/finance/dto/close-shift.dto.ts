@@ -1,4 +1,4 @@
-import { IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator'
+import { IsBoolean, IsInt, IsObject, IsOptional, IsString, Min } from 'class-validator'
 
 export class CloseShiftDto {
   @IsInt()
@@ -12,4 +12,8 @@ export class CloseShiftDto {
   @IsOptional()
   @IsString()
   varianceReason?: string
+
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean
 }

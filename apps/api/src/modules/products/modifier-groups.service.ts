@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import { modifierGroups, modifiers, withTenantContext } from '@hospitality-os/database'
+import { modifierGroups, modifiers, withTenantContext, type Db } from '@hospitality-os/database'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
@@ -137,5 +137,12 @@ export class ModifierGroupsService {
       await db.delete(modifiers).where(eq(modifiers.modifierGroupId, id))
       await db.delete(modifierGroups).where(eq(modifierGroups.id, id))
     })
+  }
+
+  // db-first: callable from another module's already-open transaction
+  // (e.g. OrdersService.addItem validating selected modifiers).
+  async getModifiersByIds(db: Db, organizationId: string, ids: string[]) {
+    if (!ids.length) return []
+    return db.select().from(modifiers).where(and(eq(modifiers.organizationId, organizationId), inArray(modifiers.id, ids)))
   }
 }

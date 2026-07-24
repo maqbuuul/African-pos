@@ -62,6 +62,7 @@ export const PaymentIntentStatusSchema = z.enum([
   'pending',
   'processing',
   'confirmed',
+  'held',
   'failed',
   'cancelled',
   'expired',
@@ -72,6 +73,7 @@ export const PAYMENT_INTENT_STATUS_TRANSITIONS: Readonly<Record<PaymentIntentSta
   pending:    ['processing', 'confirmed', 'failed', 'cancelled', 'expired'],
   processing: ['confirmed', 'failed', 'expired', 'cancelled'],
   confirmed:  [],
+  held:       ['confirmed', 'cancelled', 'failed', 'expired'],
   failed:     ['pending'], // cashier can retry with a fresh intent; service creates a new row
   cancelled:  [],
   expired:    [],
@@ -430,6 +432,9 @@ export type KdsTicketStatus = z.infer<typeof KdsTicketStatusSchema>
 export const KdsTicketItemStatusSchema = z.enum(['queued', 'accepted', 'in_progress', 'ready', 'void_requested', 'voided'])
 export type KdsTicketItemStatus = z.infer<typeof KdsTicketItemStatusSchema>
 
+export const KdsStationTypeSchema = z.enum(['kitchen', 'bar'])
+export type KdsStationType = z.infer<typeof KdsStationTypeSchema>
+
 export const KDS_TICKET_ITEM_STATUS_TRANSITIONS: Readonly<Record<KdsTicketItemStatus, readonly KdsTicketItemStatus[]>> = {
   queued: ['accepted', 'in_progress', 'ready', 'void_requested', 'voided'],
   accepted: ['in_progress', 'ready', 'void_requested', 'voided'],
@@ -555,7 +560,7 @@ export type CreditAccountStatus = z.infer<typeof CreditAccountStatusSchema>
 
 export const ConflictResolutionSchema = z.enum(['server_wins', 'append_merge', 'payment_dependent', 'manual_review', 'use_local', 'use_remote', 'manual'])
 export type ConflictResolution = z.infer<typeof ConflictResolutionSchema>
-export const SyncEntityTypeSchema = z.enum(['orders', 'order_items', 'products', 'customers', 'inventory_items', 'payments', 'refunds', 'receipts'])
+export const SyncEntityTypeSchema = z.enum(['orders', 'order_items', 'products', 'customers', 'inventory_items', 'payments', 'refunds', 'receipts', 'etims_submission'])
 export type SyncEntityType = z.infer<typeof SyncEntityTypeSchema>
 export const SyncOperationTypeSchema = z.enum(['create', 'update', 'delete'])
 export type SyncOperationType = z.infer<typeof SyncOperationTypeSchema>

@@ -7,6 +7,7 @@ import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
 import type { CreateMenuDto } from './dto/create-menu.dto.js'
+import type { UpdateMenuDto } from './dto/update-menu.dto.js'
 
 @Injectable()
 export class MenusService {
@@ -65,7 +66,7 @@ export class MenusService {
     })
   }
 
-  async update(authContext: AuthContext, id: string, data: any) {
+  async update(authContext: AuthContext, id: string, data: UpdateMenuDto) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const [existing] = await db
         .select()
@@ -75,7 +76,11 @@ export class MenusService {
 
       const [updated] = await db
         .update(menus)
-        .set({ ...data })
+        .set({
+          ...(data.name !== undefined ? { name: data.name } : {}),
+          ...(data.description !== undefined ? { description: data.description } : {}),
+          ...(data.isDefault !== undefined ? { isDefault: data.isDefault } : {}),
+        })
         .where(and(eq(menus.id, id), eq(menus.organizationId, authContext.organizationId)))
         .returning()
       if (!updated) throw new Error('failed to update menu')

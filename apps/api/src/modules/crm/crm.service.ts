@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from '@nes
 import { and, desc, eq, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
+  bills,
   customerCreditAccounts,
   customerFeedback,
   customerIdentities,
@@ -10,10 +11,12 @@ import {
   giftCards,
   loyaltyAccounts,
   loyaltyEvents,
+  orders,
+  tenantSettings,
   withTenantContext,
+  type Db,
 } from '@hospitality-os/database'
 import type { GiftCardStatus } from '@hospitality-os/domain'
-
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
@@ -39,50 +42,55 @@ export class CrmService {
   // Customer identity resolution — phone-first merge key (PRD 13 Business Rules).
   // ---------------------------------------------------------------------------
   async findOrCreateByPhone(authContext: AuthContext, params: FindOrCreateCustomerParams) {
-    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      if (params.phone) {
-        const existing = await db
+    return withTenantContext(this.pool, authContext.organizationId, (db) => this.findOrCreateByPhoneInTx(db, authContext, params))
+  }
+
+  // db-first: callable from another module's already-open transaction (e.g.
+  // QrOrderService.captureLoyalty, so the find-or-create commits atomically
+  // with the rest of that request instead of opening a second connection).
+  async findOrCreateByPhoneInTx(db: Db, authContext: AuthContext, params: FindOrCreateCustomerParams) {
+    if (params.phone) {
+      const existing = await db
+        .select()
+        .from(customers)
+        .where(and(eq(customers.organizationId, authContext.organizationId), eq(customers.phone, params.phone), eq(customers.status, 'active')))
+        .limit(1)
+        .then((r) => r[0])
+      if (existing) return existing
+      const identity = await db
+        .select()
+        .from(customerIdentities)
+        .where(and(eq(customerIdentities.organizationId, authContext.organizationId), eq(customerIdentities.identityType, 'phone'), eq(customerIdentities.identityValue, params.phone)))
+        .limit(1)
+        .then((r) => r[0])
+      if (identity) {
+        const customer = await db
           .select()
           .from(customers)
-          .where(and(eq(customers.organizationId, authContext.organizationId), eq(customers.phone, params.phone), eq(customers.status, 'active')))
+          .where(and(eq(customers.id, identity.customerId), eq(customers.organizationId, authContext.organizationId)))
           .limit(1)
           .then((r) => r[0])
-        if (existing) return existing
-        const identity = await db
-          .select()
-          .from(customerIdentities)
-          .where(and(eq(customerIdentities.organizationId, authContext.organizationId), eq(customerIdentities.identityType, 'phone'), eq(customerIdentities.identityValue, params.phone)))
-          .limit(1)
-          .then((r) => r[0])
-        if (identity) {
-          const customer = await db
-            .select()
-            .from(customers)
-            .where(and(eq(customers.id, identity.customerId), eq(customers.organizationId, authContext.organizationId)))
-            .limit(1)
-            .then((r) => r[0])
-          if (customer) return customer
-        }
+        if (customer) return customer
       }
-      const [customer] = await db
-        .insert(customers)
-        .values({
-          organizationId: authContext.organizationId,
-          phone: params.phone ?? null,
-          email: params.email ?? null,
-          firstName: params.firstName ?? null,
-          lastName: params.lastName ?? null,
-        })
-        .returning()
-      if (!customer) throw new Error('failed to create customer')
-      if (params.phone) {
-        await db.insert(customerIdentities).values({
-          organizationId: authContext.organizationId, customerId: customer.id,
-          identityType: 'phone', identityValue: params.phone,
-        })
-      }
-      return customer
-    })
+    }
+    const [customer] = await db
+      .insert(customers)
+      .values({
+        organizationId: authContext.organizationId,
+        phone: params.phone ?? null,
+        email: params.email ?? null,
+        firstName: params.firstName ?? null,
+        lastName: params.lastName ?? null,
+      })
+      .returning()
+    if (!customer) throw new Error('failed to create customer')
+    if (params.phone) {
+      await db.insert(customerIdentities).values({
+        organizationId: authContext.organizationId, customerId: customer.id,
+        identityType: 'phone', identityValue: params.phone,
+      })
+    }
+    return customer
   }
 
   async createCustomer(authContext: AuthContext, dto: CreateCustomerDto) {
@@ -95,6 +103,7 @@ export class CrmService {
         lastName: dto.lastName ?? null,
         notes: dto.notes ?? null,
         allergyNotes: dto.allergyNotes ?? null,
+        creditRisk: dto.creditRisk ?? false,
       }).returning()
       return customer!
     })
@@ -174,6 +183,25 @@ export class CrmService {
   // ---------------------------------------------------------------------------
   // Loyalty
   // ---------------------------------------------------------------------------
+  // db-first: callable from another module's already-open transaction (e.g.
+  // QrOrderService.captureLoyalty).
+  async findOrCreateLoyaltyAccountInTx(db: Db, organizationId: string, customerId: string): Promise<{ account: typeof loyaltyAccounts.$inferSelect; created: boolean }> {
+    const existing = await db
+      .select()
+      .from(loyaltyAccounts)
+      .where(eq(loyaltyAccounts.customerId, customerId))
+      .limit(1)
+      .then((r) => r[0])
+    if (existing) return { account: existing, created: false }
+
+    const [account] = await db
+      .insert(loyaltyAccounts)
+      .values({ organizationId, customerId, tier: 'bronze', points: 0, lifetimePoints: 0 })
+      .returning()
+    if (!account) throw new Error('failed to create loyalty account')
+    return { account, created: true }
+  }
+
   async createLoyaltyAccount(authContext: AuthContext, dto: CreateLoyaltyAccountDto) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const [account] = await db.insert(loyaltyAccounts).values({
@@ -408,25 +436,36 @@ export class CrmService {
     })
   }
 
-  async createFeedback(authContext: AuthContext, data: { locationId: string; customerId?: string; orderId?: string; rating?: number; comment?: string; source?: string }) {
-    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const rows = await db.insert(customerFeedback).values({
-        organizationId: authContext.organizationId,
-        locationId: data.locationId,
-        customerId: data.customerId ?? null,
-        orderId: data.orderId ?? null,
-        orderItemId: null,
-        source: data.source ?? 'manual',
-        rating: data.rating ?? null,
-        comment: data.comment ?? null,
-        externalReviewId: null,
-        sourceUrl: null,
-        sentiment: null,
-        isNegative: data.rating != null && data.rating <= 2,
-        alertSent: false,
-      }).returning()
-      return rows[0]!
-    })
+  async createFeedback(
+    authContext: AuthContext,
+    data: { locationId: string; customerId?: string; orderId?: string; orderItemId?: string; rating?: number; comment?: string | undefined; source?: string },
+  ) {
+    return withTenantContext(this.pool, authContext.organizationId, (db) => this.createFeedbackInTx(db, authContext, data))
+  }
+
+  // db-first: callable from another module's already-open transaction (e.g.
+  // QrOrderService.submitFeedback/rateDish).
+  async createFeedbackInTx(
+    db: Db,
+    authContext: AuthContext,
+    data: { locationId: string; customerId?: string; orderId?: string; orderItemId?: string; rating?: number; comment?: string | undefined; source?: string },
+  ) {
+    const rows = await db.insert(customerFeedback).values({
+      organizationId: authContext.organizationId,
+      locationId: data.locationId,
+      customerId: data.customerId ?? null,
+      orderId: data.orderId ?? null,
+      orderItemId: data.orderItemId ?? null,
+      source: data.source ?? 'manual',
+      rating: data.rating ?? null,
+      comment: data.comment ?? null,
+      externalReviewId: null,
+      sourceUrl: null,
+      sentiment: null,
+      isNegative: data.rating != null && data.rating <= 2,
+      alertSent: false,
+    }).returning()
+    return rows[0]!
   }
 
   // ---------------------------------------------------------------------------
@@ -508,6 +547,72 @@ export class CrmService {
         negativeRate: totalReviews > 0 ? negativeCount / totalReviews : 0,
         ratingDistribution: rows.map((r) => ({ rating: r.ratingDistribution, count: Number(r.ratingCount) })),
       }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Chama / SACCO auto-routing (P13)
+  // ---------------------------------------------------------------------------
+  async setupChamaRouting(authContext: AuthContext, percentage: number, linkedAccountRef: string) {
+    if (percentage < 1 || percentage > 100) {
+      throw new BadRequestException('percentage must be between 1 and 100')
+    }
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const config = { percentage, linkedAccountRef, enabled: true }
+      await db
+        .insert(tenantSettings)
+        .values({ organizationId: authContext.organizationId, locationId: null, key: 'chama_routing_config', value: config })
+        .onConflictDoUpdate({
+          target: [tenantSettings.organizationId, tenantSettings.key],
+          set: { value: config, updatedAt: sql`now()` },
+          targetWhere: sql`${tenantSettings.locationId} is null`,
+        })
+      return { ...config, organizationId: authContext.organizationId, createdAt: new Date() }
+    })
+  }
+
+  async processChamaRouting(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const setting = await db
+        .select()
+        .from(tenantSettings)
+        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'chama_routing_config'), sql`${tenantSettings.locationId} is null`))
+        .limit(1)
+        .then((r) => r[0] ?? null)
+      if (!setting) throw new NotFoundException('chama routing not configured — call setupChamaRouting first')
+      const config = setting.value as { percentage: number; linkedAccountRef: string; enabled: boolean }
+      if (!config.enabled) throw new BadRequestException('chama routing is disabled')
+      const today = sql`CURRENT_DATE`
+      const rows = await db
+        .select({ totalAmount: bills.totalAmount })
+        .from(bills)
+        .innerJoin(orders, eq(bills.orderId, orders.id))
+        .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'paid'), sql`DATE(${bills.paidAt}) = ${today}`))
+      const totalRevenue = rows.reduce((sum, r) => sum + Number(r.totalAmount), 0)
+      const chamaAmount = Math.round(totalRevenue * config.percentage / 100)
+      return {
+        totalRevenue,
+        percentage: config.percentage,
+        chamaAmount,
+        linkedAccountRef: config.linkedAccountRef,
+        date: new Date(),
+      }
+    })
+  }
+
+  async getSentimentAlerts(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select()
+        .from(customerFeedback)
+        .where(and(eq(customerFeedback.organizationId, authContext.organizationId), eq(customerFeedback.locationId, locationId), eq(customerFeedback.isNegative, true), eq(customerFeedback.alertSent, false)))
+        .orderBy(customerFeedback.createdAt)
+      return rows.map((r) => ({
+        rating: r.rating,
+        comment: r.comment,
+        source: r.source,
+        createdAt: r.createdAt,
+      }))
     })
   }
 }

@@ -374,6 +374,37 @@ export class TablesService {
     return table
   }
 
+  // ---------------------------------------------------------------------------
+  // db-first: callable from another module's already-open transaction (e.g.
+  // OrdersService/KdsService cascading a table's status/assignment as a
+  // side effect of an order event), never opens its own withTenantContext.
+  // ---------------------------------------------------------------------------
+
+  async getByIdInTx(db: Db, organizationId: string, id: string) {
+    return this.loadTable(db, organizationId, id)
+  }
+
+  // Best-effort: silently leaves the table alone when its current status
+  // doesn't legally allow `status` (matches the pre-existing inline
+  // behavior at orders.service.ts's fire/split call sites — a second course
+  // fired after the table is already 'ordered' shouldn't error).
+  async setStatusInTx(db: Db, organizationId: string, tableId: string, status: TableStatus) {
+    const [table] = await db
+      .select()
+      .from(restaurantTables)
+      .where(and(eq(restaurantTables.id, tableId), eq(restaurantTables.organizationId, organizationId)))
+    if (!table || !TABLE_STATE_TRANSITIONS[table.status as TableStatus]?.includes(status)) return table
+    const [updated] = await db.update(restaurantTables).set({ status }).where(eq(restaurantTables.id, tableId)).returning()
+    return updated
+  }
+
+  async assignOrder(db: Db, organizationId: string, tableId: string, orderId: string | null) {
+    await db
+      .update(restaurantTables)
+      .set({ orderId })
+      .where(and(eq(restaurantTables.id, tableId), eq(restaurantTables.organizationId, organizationId)))
+  }
+
   private assertOwnSectionOrManager(granted: string[], table: TableRow, authContext: AuthContext) {
     if (granted.includes(MANAGE_ANY_SECTION)) return
     if (table.assignedStaffId && table.assignedStaffId !== authContext.actorId) {

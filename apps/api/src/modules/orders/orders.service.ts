@@ -1,19 +1,13 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common'
 import { and, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
   billItems,
-  modifiers,
   orderDiscounts,
   orderItemModifiers,
   orderItems,
   orders,
-  products,
-  recipeIngredients,
-  recipes,
-  restaurantTables,
-  stockMovements,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -22,20 +16,23 @@ import {
   ORDER_ITEM_STATUS_TRANSITIONS,
   ORDER_STATUS_TRANSITIONS,
   ORDER_VOIDABLE_PRE_PAYMENT,
-  TABLE_STATE_TRANSITIONS,
   type OrderItemStatus,
   type OrderStatus,
-  type TableStatus,
 } from '@hospitality-os/domain'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
+import { OutboxService } from '../../core/events/outbox.service.js'
 import { ApprovalRequiredException } from '../../core/errors/approval-required.exception.js'
 import { ApprovalsService } from '../../core/permissions/approvals.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import { TenantSettingsService } from '../../core/tenant/tenant-settings.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { InventoryService } from '../inventory/inventory.service.js'
+import { ModifierGroupsService } from '../products/modifier-groups.service.js'
+import { ProductsService } from '../products/products.service.js'
 import { KdsService } from '../restaurant/kds.service.js'
+import { TablesService } from '../restaurant/tables.service.js'
 import type { AddOrderItemDto } from './dto/add-order-item.dto.js'
 import type { ApplyDiscountDto } from './dto/apply-discount.dto.js'
 import type { CreateOrderDto } from './dto/create-order.dto.js'
@@ -79,10 +76,15 @@ export class OrdersService {
   constructor(
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
+    @Inject(OutboxService) private readonly outbox: OutboxService,
     @Inject(ApprovalsService) private readonly approvalsService: ApprovalsService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(TenantSettingsService) private readonly tenantSettings: TenantSettingsService,
-    @Inject(KdsService) private readonly kdsService: KdsService,
+    @Inject(forwardRef(() => KdsService)) private readonly kdsService: KdsService,
+    @Inject(TablesService) private readonly tablesService: TablesService,
+    @Inject(ProductsService) private readonly productsService: ProductsService,
+    @Inject(ModifierGroupsService) private readonly modifierGroupsService: ModifierGroupsService,
+    @Inject(InventoryService) private readonly inventoryService: InventoryService,
   ) {}
 
   async list(authContext: AuthContext, query: ListOrdersQuery) {
@@ -121,10 +123,7 @@ export class OrdersService {
   async create(authContext: AuthContext, dto: CreateOrderDto) {
     const row = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
       if (dto.tableId) {
-        // RLS-scoped SELECT — a foreign-tenant tableId is simply invisible on
-        // this connection, same pattern as TablesService/ProductsService.
-        const [table] = await db.select().from(restaurantTables).where(eq(restaurantTables.id, dto.tableId))
-        if (!table) throw new NotFoundException('table not found')
+        await this.tablesService.getByIdInTx(db, authContext.organizationId, dto.tableId)
       }
 
       const [created] = await db
@@ -145,8 +144,18 @@ export class OrdersService {
       // in (packages/database/src/schema/restaurant/index.ts: "orderId ...
       // for P5 to populate once orders exists").
       if (dto.tableId) {
-        await db.update(restaurantTables).set({ orderId: created.id }).where(eq(restaurantTables.id, dto.tableId))
+        await this.tablesService.assignOrder(db, authContext.organizationId, dto.tableId, created.id)
       }
+
+      await this.outbox.persistAndEmit(db, {
+        eventType: 'OrderOpened',
+        organizationId: authContext.organizationId,
+        locationId: created.locationId,
+        entityType: 'order',
+        entityId: created.id,
+        data: { channel: created.channel, tableId: created.tableId },
+        occurredAt: new Date(),
+      })
 
       return created
     })
@@ -170,11 +179,7 @@ export class OrdersService {
       const order = await this.loadOrder(db, authContext.organizationId, orderId)
       await this.assertOwnOrderOrManager(db, authContext, order)
 
-      const [product] = await db
-        .select()
-        .from(products)
-        .where(and(eq(products.id, dto.productId), eq(products.organizationId, authContext.organizationId)))
-      if (!product) throw new NotFoundException('product not found')
+      const product = await this.productsService.getProductById(db, authContext.organizationId, dto.productId)
       if (!product.isAvailable || !['active', 'seasonal'].includes(product.status)) {
         throw new BadRequestException({ code: 'product_unavailable', message: 'product is not currently available' })
       }
@@ -183,10 +188,7 @@ export class OrdersService {
       let modifiersPriceAmount = 0
       const selectedModifiers: { id: string; name: string; priceDelta: number; currency: string }[] = []
       if (dto.modifierIds?.length) {
-        const rows = await db
-          .select()
-          .from(modifiers)
-          .where(and(eq(modifiers.organizationId, authContext.organizationId), inArray(modifiers.id, dto.modifierIds)))
+        const rows = await this.modifierGroupsService.getModifiersByIds(db, authContext.organizationId, dto.modifierIds)
         if (rows.length !== new Set(dto.modifierIds).size) throw new NotFoundException('one or more modifiers not found')
         for (const modifier of rows) {
           modifiersPriceAmount += modifier.priceDelta
@@ -355,10 +357,7 @@ export class OrdersService {
       // table's current status doesn't legally allow it (e.g. a second
       // course fired after the table is already 'ordered').
       if (order.tableId) {
-        const [table] = await db.select().from(restaurantTables).where(eq(restaurantTables.id, order.tableId))
-        if (table && TABLE_STATE_TRANSITIONS[table.status as TableStatus]?.includes('ordered')) {
-          await db.update(restaurantTables).set({ status: 'ordered' }).where(eq(restaurantTables.id, order.tableId))
-        }
+        await this.tablesService.setStatusInTx(db, authContext.organizationId, order.tableId, 'ordered')
       }
 
       await this.kdsService.createTicketsForSentItems(db, authContext, updatedOrder, toFire)
@@ -482,7 +481,7 @@ export class OrdersService {
       await this.recomputeOrderTotals(db, authContext.organizationId, orderId)
 
       if (order.tableId) {
-        await db.update(restaurantTables).set({ orderId: null }).where(eq(restaurantTables.id, order.tableId))
+        await this.tablesService.assignOrder(db, authContext.organizationId, order.tableId, null)
       }
 
       return updated
@@ -557,10 +556,7 @@ export class OrdersService {
       }
 
       if (order.tableId) {
-        const [table] = await db.select().from(restaurantTables).where(eq(restaurantTables.id, order.tableId))
-        if (table && TABLE_STATE_TRANSITIONS[table.status as TableStatus]?.includes('bill_requested')) {
-          await db.update(restaurantTables).set({ status: 'bill_requested' }).where(eq(restaurantTables.id, order.tableId))
-        }
+        await this.tablesService.setStatusInTx(db, authContext.organizationId, order.tableId, 'bill_requested')
       }
 
       return { order: updatedOrder, createdBills }
@@ -582,10 +578,10 @@ export class OrdersService {
 
   // Deliberately narrow: PRD 05 explicitly hands payment capture itself off
   // to P7 ("a bill reaching payment_pending hands off to it"). This phase
-  // only builds the completion check + table-release cascade — the positive
-  // path (all bills actually `paid`) isn't reachable until P7 exists to flip
-  // a bill's status; the negative path (rejecting a close attempt while bills
-  // are unpaid) is real, correct, and verifiable today.
+  // only builds the completion check + table-release cascade — the negative
+  // path (rejecting a close attempt while bills are unpaid) is real; the
+  // positive path is the same one PaymentsService's settlement flow drives
+  // automatically via applyPaymentCompletion below (P7 now built).
   async close(authContext: AuthContext, orderId: string) {
     const result = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const order = await this.loadOrder(db, authContext.organizationId, orderId)
@@ -597,20 +593,12 @@ export class OrdersService {
       if (unpaid.length > 0) {
         throw new BadRequestException({
           code: 'bills_not_paid',
-          message: `${unpaid.length} bill(s) are not yet paid — payment capture is P7 (Payments Core) scope, not yet built`,
+          message: `${unpaid.length} bill(s) are not yet paid`,
           pendingBillIds: unpaid.map((bill) => bill.id),
         })
       }
 
-      this.assertLegalOrderTransition(order.status as OrderStatus, 'paid')
-      const [updated] = await db.update(orders).set({ status: 'paid', closedAt: sql`now()` }).where(eq(orders.id, orderId)).returning()
-      if (!updated) throw new Error('failed to close order')
-
-      if (order.tableId) {
-        await db.update(restaurantTables).set({ status: 'cleaning', orderId: null }).where(eq(restaurantTables.id, order.tableId))
-      }
-
-      return updated
+      return this.finalizeOrderPaid(db, authContext.organizationId, order)
     })
 
     await this.auditLog.record({
@@ -624,6 +612,134 @@ export class OrdersService {
     })
 
     return result
+  }
+
+  private async finalizeOrderPaid(db: Db, organizationId: string, order: OrderRow): Promise<OrderRow> {
+    // The state machine models a `payment_pending` step between
+    // `bill_requested` and `paid` (ORDER_STATUS_TRANSITIONS), but the
+    // staff-facing cash/card/mobile-money flows (unlike qr-order's) never
+    // explicitly set it — walk through it here so a straight
+    // `bill_requested` -> `paid` completion (the common case once every
+    // bill is settled) still passes validation instead of being rejected.
+    let fromStatus = order.status as OrderStatus
+    if (fromStatus !== 'payment_pending' && ORDER_STATUS_TRANSITIONS[fromStatus]?.includes('payment_pending')) {
+      await db.update(orders).set({ status: 'payment_pending' }).where(eq(orders.id, order.id))
+      fromStatus = 'payment_pending'
+    }
+    this.assertLegalOrderTransition(fromStatus, 'paid')
+    const [updated] = await db.update(orders).set({ status: 'paid', closedAt: sql`now()` }).where(eq(orders.id, order.id)).returning()
+    if (!updated) throw new Error('failed to close order')
+
+    if (order.tableId) {
+      await this.tablesService.setStatusInTx(db, organizationId, order.tableId, 'cleaning')
+      await this.tablesService.assignOrder(db, organizationId, order.tableId, null)
+    }
+
+    return updated
+  }
+
+  // ---------------------------------------------------------------------------
+  // db-first: called from PaymentsService's own transaction (bills/orders
+  // are orders-owned — see orders.module.ts's `owns` manifest) so a bill's
+  // paid status and its order's paid status flip atomically with the
+  // payment confirmation that caused them, and go through the same
+  // ORDER_STATUS_TRANSITIONS validation every other order-status write does.
+  // ---------------------------------------------------------------------------
+
+  // Marks a single bill paid (idempotent — returns null if already paid or
+  // missing) and reports whether every bill on its order is now paid too.
+  // Does not touch the order itself — see applyPaymentCompletion.
+  async markBillFullyPaid(db: Db, organizationId: string, billId: string): Promise<{ orderId: string; allBillsOnOrderPaid: boolean } | null> {
+    const [bill] = await db.select().from(bills).where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
+    if (!bill || bill.status === 'paid') return null
+
+    await db.update(bills).set({ status: 'paid', paidAt: sql`now()`, updatedAt: sql`now()` }).where(eq(bills.id, billId))
+
+    const allOrderBills = await db.select().from(bills).where(and(eq(bills.orderId, bill.orderId), eq(bills.organizationId, organizationId)))
+    const allBillsOnOrderPaid = allOrderBills.every((b) => (b.id === billId ? true : b.status === 'paid'))
+    return { orderId: bill.orderId, allBillsOnOrderPaid }
+  }
+
+  // Flips the order to 'paid' + releases its table, same cascade as close().
+  async applyPaymentCompletion(db: Db, organizationId: string, orderId: string): Promise<void> {
+    const order = await this.loadOrder(db, organizationId, orderId)
+    await this.finalizeOrderPaid(db, organizationId, order)
+  }
+
+  // billItems -> orderItems join for PaymentsService's card-surcharge
+  // computation (billItems is orders-owned; orderItems too).
+  async getProductIdsForBillItems(
+    db: Db,
+    organizationId: string,
+    billId: string,
+  ): Promise<{ orderItemId: string; productId: string; allocatedAmount: number }[]> {
+    return db
+      .select({ orderItemId: billItems.orderItemId, allocatedAmount: billItems.allocatedAmount, productId: orderItems.productId })
+      .from(billItems)
+      .innerJoin(orderItems, eq(billItems.orderItemId, orderItems.id))
+      .where(and(eq(billItems.billId, billId), eq(billItems.organizationId, organizationId)))
+  }
+
+  // ---------------------------------------------------------------------------
+  // db-first: called from KdsService's own transaction (kitchen-initiated
+  // actions — bump/recall/void-acknowledge — hit KdsController directly,
+  // not through this controller) so order_item/order status writes stay
+  // owned here and go through the same ORDER_ITEM_STATUS_TRANSITIONS /
+  // ORDER_STATUS_TRANSITIONS validation every other write does.
+  // ---------------------------------------------------------------------------
+
+  async syncItemStatusFromKitchen(
+    db: Db,
+    organizationId: string,
+    orderItemId: string,
+    nextStatus: OrderItemStatus,
+    resolvedByActorId?: string,
+    voidReason?: string,
+  ): Promise<OrderItemRow> {
+    const [item] = await db.select().from(orderItems).where(and(eq(orderItems.id, orderItemId), eq(orderItems.organizationId, organizationId)))
+    if (!item) throw new NotFoundException('order item not found')
+    if (item.status === nextStatus) return item
+    this.assertLegalItemTransition(item.status as OrderItemStatus, nextStatus)
+
+    const patch: Partial<OrderItemRow> = { status: nextStatus }
+    if (nextStatus === 'voided' && resolvedByActorId) patch.resolvedByActorId = resolvedByActorId
+    if (nextStatus === 'void_requested' && voidReason) patch.voidReason = voidReason
+
+    const [updated] = await db.update(orderItems).set(patch).where(eq(orderItems.id, orderItemId)).returning()
+    if (!updated) throw new Error('failed to sync order item from kitchen state')
+    return updated
+  }
+
+  // Collapses what used to be two near-duplicate implementations
+  // (this file's own recomputeOrderTotals + kds.service.ts's
+  // recomputeOrderReadiness) into one call KdsService makes after every
+  // kitchen-ticket-item transition.
+  async recomputeReadinessAndTotals(db: Db, organizationId: string, orderId: string): Promise<void> {
+    await this.recomputeOrderTotals(db, organizationId, orderId)
+
+    const order = await this.loadOrder(db, organizationId, orderId)
+    if (!['sent_to_kitchen', 'partially_ready', 'ready', 'served'].includes(order.status)) return
+
+    const items = await db
+      .select()
+      .from(orderItems)
+      .where(and(eq(orderItems.orderId, orderId), ne(orderItems.status, 'voided'), ne(orderItems.status, 'comped')))
+    if (items.length === 0) return
+
+    const nextStatus: OrderStatus = items.every((item) => item.status === 'served')
+      ? 'served'
+      : items.every((item) => ['ready', 'served'].includes(item.status))
+        ? 'ready'
+        : items.some((item) => ['ready', 'served'].includes(item.status))
+          ? 'partially_ready'
+          : 'sent_to_kitchen'
+
+    if (nextStatus !== order.status && ORDER_STATUS_TRANSITIONS[order.status as OrderStatus]?.includes(nextStatus)) {
+      await db.update(orders).set({ status: nextStatus }).where(eq(orders.id, orderId))
+      if (nextStatus === 'ready' && order.tableId) {
+        await this.tablesService.setStatusInTx(db, organizationId, order.tableId, 'food_ready')
+      }
+    }
   }
 
   private buildSplitGroups(dto: SplitOrderDto, items: OrderItemRow[]): { billNumber: number; items: { item: OrderItemRow; amount: number }[] }[] {
@@ -696,7 +812,7 @@ export class OrdersService {
       const [updated] = await db.update(orderItems).set({ status: 'served' }).where(eq(orderItems.id, itemId)).returning()
       if (!updated) throw new Error('failed to mark order item served')
 
-      await this.deductRecipeIngredients(db, authContext, order.locationId, item.productId, itemId)
+      await this.inventoryService.deductForRecipeSale(db, authContext, order.locationId, item.productId, itemId, item.quantity)
 
       return updated
     })
@@ -712,43 +828,6 @@ export class OrdersService {
     })
 
     return row
-  }
-
-  private async deductRecipeIngredients(
-    db: Db,
-    authContext: AuthContext,
-    locationId: string,
-    productId: string,
-    orderItemId: string,
-  ) {
-    const [recipe] = await db
-      .select()
-      .from(recipes)
-      .where(and(eq(recipes.productId, productId), eq(recipes.organizationId, authContext.organizationId)))
-      .limit(1)
-    if (!recipe) return
-
-    const ingredients = await db
-      .select({ inventoryItemId: recipeIngredients.inventoryItemId, quantity: recipeIngredients.quantity, unit: recipeIngredients.unit })
-      .from(recipeIngredients)
-      .where(eq(recipeIngredients.recipeId, recipe.id))
-    if (ingredients.length === 0) return
-
-    const now = new Date()
-    for (const ing of ingredients) {
-      await db.insert(stockMovements).values({
-        organizationId: authContext.organizationId,
-        locationId,
-        inventoryItemId: ing.inventoryItemId,
-        movementType: 'recipe_deduction',
-        quantity: -Math.abs(ing.quantity),
-        unit: ing.unit,
-        referenceType: 'order_item',
-        referenceId: orderItemId,
-        movedByActorId: authContext.actorId,
-        movedAt: now,
-      })
-    }
   }
 
   private async resolveItemStatusChange(
@@ -1026,6 +1105,198 @@ export class OrdersService {
         from,
         to,
       })
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // db-first / QrOrderService support. QrOrderModule owns no tables (see
+  // qr-order.module.ts's `owns: []`) — order/order_item/bill creation and
+  // status transitions for a customer table-session cart are orders-owned,
+  // so they live here instead of being duplicated inline in that module.
+  // ---------------------------------------------------------------------------
+
+  // Draft status (not `open`, unlike the staff-facing create()) is
+  // load-bearing: reports.service.ts/whatsapp-reports.service.ts explicitly
+  // filter draft orders out of sales figures, and a QR cart isn't a real
+  // order until the customer actually submits it.
+  async createDraftOrderWithItems(
+    db: Db,
+    params: { organizationId: string; locationId: string; tableId: string; currency: string },
+    items: { productId: string; quantity: number; modifierIds?: string[]; notes?: string; sessionLabel?: string }[],
+  ): Promise<{ order: OrderRow; items: OrderItemRow[]; bill: BillRow }> {
+    const [order] = await db
+      .insert(orders)
+      .values({
+        organizationId: params.organizationId,
+        locationId: params.locationId,
+        tableId: params.tableId,
+        channel: 'qr_table',
+        status: 'draft',
+        currency: params.currency,
+      })
+      .returning()
+    if (!order) throw new Error('failed to create order')
+
+    const createdItems: OrderItemRow[] = []
+    for (const item of items) {
+      const [product] = await this.productsService.getProductsByIds(db, params.organizationId, [item.productId])
+      if (!product) continue
+
+      const modifierRows = item.modifierIds?.length
+        ? await this.modifierGroupsService.getModifiersByIds(db, params.organizationId, item.modifierIds)
+        : []
+      const modsPrice = modifierRows.reduce((sum, mod) => sum + mod.priceDelta, 0)
+
+      const [oi] = await db
+        .insert(orderItems)
+        .values({
+          organizationId: params.organizationId,
+          locationId: params.locationId,
+          orderId: order.id,
+          productId: product.id,
+          nameSnapshot: product.name,
+          localNameSnapshot: product.localName,
+          quantity: item.quantity,
+          kitchenNote: item.notes ?? null,
+          unitPriceAmount: product.priceAmount,
+          modifiersPriceAmount: modsPrice,
+          totalAmount: (product.priceAmount + modsPrice) * item.quantity,
+          discountAmount: 0,
+          currency: params.currency,
+          status: 'draft',
+          sessionLabel: item.sessionLabel ?? null,
+        })
+        .returning()
+      if (!oi) throw new Error('failed to create order item')
+
+      if (modifierRows.length) {
+        await db.insert(orderItemModifiers).values(
+          modifierRows.map((mod) => ({
+            organizationId: params.organizationId,
+            orderItemId: oi.id,
+            modifierId: mod.id,
+            nameSnapshot: mod.name,
+            priceDeltaAmount: mod.priceDelta,
+            currency: params.currency,
+          })),
+        )
+      }
+      createdItems.push(oi)
+    }
+
+    const [bill] = await db
+      .insert(bills)
+      .values({
+        organizationId: params.organizationId,
+        locationId: params.locationId,
+        orderId: order.id,
+        billNumber: 1,
+        status: 'open',
+        currency: params.currency,
+        subtotalAmount: 0,
+        discountAmount: 0,
+        taxAmount: 0,
+        serviceChargeAmount: 0,
+        tipAmount: 0,
+        totalAmount: 0,
+      })
+      .returning()
+    if (!bill) throw new Error('failed to create bill')
+
+    return { order, items: createdItems, bill }
+  }
+
+  async getOrderItemById(db: Db, organizationId: string, orderItemId: string): Promise<OrderItemRow> {
+    const [item] = await db.select().from(orderItems).where(and(eq(orderItems.id, orderItemId), eq(orderItems.organizationId, organizationId)))
+    if (!item) throw new NotFoundException('order item not found')
+    return item
+  }
+
+  // Fires every still-draft item in a named course — the QR-ordering
+  // equivalent of send(), which fires by explicit itemIds instead (no
+  // assertOwnOrderOrManager check: QR orders carry no staffId to compare
+  // against, same as this method's caller never checking one).
+  async sendCourse(authContext: AuthContext, orderId: string, courseName: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const order = await this.loadOrder(db, authContext.organizationId, orderId)
+
+      const toFire = await db
+        .select()
+        .from(orderItems)
+        .where(and(eq(orderItems.orderId, orderId), eq(orderItems.status, 'draft'), eq(orderItems.course, courseName)))
+      if (toFire.length === 0) {
+        throw new BadRequestException({ code: 'no_items_for_course', message: `no draft items found for course "${courseName}"` })
+      }
+
+      await db
+        .update(orderItems)
+        .set({ status: 'sent', sentAt: sql`now()` })
+        .where(inArray(orderItems.id, toFire.map((item) => item.id)))
+
+      const fromStatus = order.status as OrderStatus
+      let updatedOrder = order
+      if ((fromStatus === 'open' || fromStatus === 'draft') && ORDER_STATUS_TRANSITIONS[fromStatus]?.includes('sent_to_kitchen')) {
+        const [next] = await db.update(orders).set({ status: 'sent_to_kitchen' }).where(eq(orders.id, orderId)).returning()
+        if (next) updatedOrder = next
+      }
+
+      if (order.tableId) {
+        await this.tablesService.setStatusInTx(db, authContext.organizationId, order.tableId, 'ordered')
+      }
+
+      await this.kdsService.createTicketsForSentItems(db, authContext, updatedOrder, toFire)
+
+      return { order: updatedOrder, firedItemIds: toFire.map((item) => item.id) }
+    })
+  }
+
+  // Ensures a single open bill exists for the whole order and moves it to
+  // bill_requested — the QR-ordering equivalent of split(), which always
+  // partitions items across N bills; a QR customer just wants "the bill."
+  async requestBillInTx(db: Db, organizationId: string, locationId: string, order: OrderRow): Promise<void> {
+    const fromStatus = order.status as OrderStatus
+    if (!ORDER_STATUS_TRANSITIONS[fromStatus]?.includes('bill_requested')) {
+      throw new BadRequestException({ code: 'invalid_status_transition', message: `cannot request bill from status ${fromStatus}` })
+    }
+
+    const [existingBill] = await db
+      .select()
+      .from(bills)
+      .where(and(eq(bills.orderId, order.id), eq(bills.organizationId, organizationId), eq(bills.status, 'open')))
+    if (!existingBill) {
+      const [newBill] = await db
+        .insert(bills)
+        .values({
+          organizationId,
+          locationId,
+          orderId: order.id,
+          billNumber: 1,
+          status: 'open',
+          currency: order.currency,
+          subtotalAmount: order.subtotalAmount,
+          discountAmount: order.discountAmount,
+          taxAmount: order.taxAmount,
+          serviceChargeAmount: order.serviceChargeAmount,
+          tipAmount: 0,
+          totalAmount: order.totalAmount,
+        })
+        .returning()
+      if (!newBill) throw new Error('failed to create bill')
+    }
+
+    await db.update(orders).set({ status: 'bill_requested' }).where(eq(orders.id, order.id))
+  }
+
+  // Best-effort nudge toward a payable state when a customer opts to pay at
+  // the counter instead of via mobile money — mirrors qr-order's pre-existing
+  // logic verbatim (not a validated transition like the rest of this file;
+  // out of scope for this pass to redesign).
+  async markForWaiterPayment(db: Db, organizationId: string, order: OrderRow): Promise<void> {
+    const fromStatus = order.status as OrderStatus
+    if (!ORDER_STATUS_TRANSITIONS[fromStatus]?.includes('payment_pending')) {
+      await db.update(orders).set({ status: 'bill_requested' }).where(eq(orders.id, order.id))
+    } else {
+      await db.update(orders).set({ status: 'payment_pending' }).where(eq(orders.id, order.id))
     }
   }
 

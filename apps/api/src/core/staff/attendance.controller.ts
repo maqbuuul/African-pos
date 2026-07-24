@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Get,
   HttpCode,
@@ -14,7 +13,9 @@ import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js'
 import { RequirePermission } from '../permissions/require-permission.decorator.js'
+import { ValidatedBody } from '../validation/validated-body.decorator.js'
 import { AttendanceService } from './attendance.service.js'
+import { ClockInDto } from './dto/clock-in.dto.js'
 
 @Controller('api/v1/staff/attendance')
 @UseGuards(JwtAuthGuard)
@@ -24,8 +25,8 @@ export class AttendanceController {
   @Post('clock-in')
   @HttpCode(200)
   @RequirePermission('attendance:clock_inout')
-  clockIn(@Req() req: Request, @Body('locationId') locationId: string) {
-    return this.attendanceService.clockIn(req.authContext!, req.authContext!.actorId, locationId)
+  clockIn(@Req() req: Request, @ValidatedBody(ClockInDto) dto: ClockInDto) {
+    return this.attendanceService.clockIn(req.authContext!, req.authContext!.actorId, dto.locationId)
   }
 
   @Post('clock-out')

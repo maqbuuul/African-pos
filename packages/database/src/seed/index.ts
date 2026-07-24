@@ -44,6 +44,12 @@ const SYSTEM_PERMISSIONS = [
   'payments:take_cash',
   'payments:refund',
   'inventory:adjust',
+  'inventory:view',
+  'inventory:manage',
+  'inventory:receive',
+  'inventory:count',
+  'inventory:manage_recipes',
+  'inventory:transfer',
   'reports:view_profit',
   'devices:activate',
   'staff:deactivate',
@@ -140,6 +146,11 @@ const SYSTEM_PERMISSIONS = [
   'reviews:view',
   'reviews:create',
   'loyalty:earn',
+  'customers:create',
+  'credit_accounts:manage',
+  'loyalty:manage',
+  'reports:view_permissions',
+  'reports:export',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -161,6 +172,7 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'payments:take_cash',
     'payments:refund',
     'inventory:adjust',
+    'inventory:view',
     'devices:activate',
     'products:toggle_availability',
     'products:view_price_history',
@@ -189,8 +201,9 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'receipts:send',
     'receipts:resend',
     'receipts:view_status',
-    // P13 — CRM: view/edit customers, redeem loyalty, view gift cards, settle credit.
+    // P13 — CRM: view/edit/create customers, redeem loyalty, view gift cards, settle credit.
     'customers:view',
+    'customers:create',
     'customers:edit',
     'loyalty:redeem',
     'gift_cards:view',
@@ -202,7 +215,7 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   // P8 — cashiers can open and close their own shifts.
   // P9 — cashiers can generate and send receipts for their own transactions.
   // P13 — cashiers can view/edit customers, redeem loyalty, redeem gift cards.
-  cashier: ['customers:view', 'customers:edit', 'loyalty:redeem', 'gift_cards:view', 'gift_cards:redeem', 'credit_accounts:settle', 'orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
+  cashier: ['customers:view', 'customers:create', 'customers:edit', 'loyalty:redeem', 'gift_cards:view', 'gift_cards:redeem', 'credit_accounts:settle', 'orders:create', 'orders:update_own', 'payments:take_cash', 'payments:take_mobile_money', 'payments:take_card', 'products:toggle_availability', 'shifts:open', 'shifts:close', 'receipts:generate', 'receipts:send', 'receipts:view_status'],
   // PRD 05: "waiter can void own item pre-kitchen-send" — orders:void_item,
   // scoped to pre-send by OrdersService's own state check, not a narrower
   // permission (master plan's Waiter Payment Policy doesn't grant waiters
@@ -210,14 +223,14 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   // P7 — waiters can take cash and mobile money (common at table service).
   // P9 — waiters can generate and send receipts for their own tables.
   // P13 — waiters can view customers and redeem loyalty at table.
-  waiter: ['customers:view', 'loyalty:redeem', 'orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
+  waiter: ['customers:view', 'customers:create', 'loyalty:redeem', 'orders:create', 'orders:update_own', 'orders:void_item', 'products:toggle_availability', 'tables:manage', 'payments:take_cash', 'payments:take_mobile_money', 'receipts:generate', 'receipts:send'],
   chef: ['products:toggle_availability', 'kds:view', 'kds:bump_own_station', 'kds:recall_own_station'],
-  stock_controller: ['inventory:adjust'],
+  stock_controller: ['inventory:view', 'inventory:manage', 'inventory:receive', 'inventory:count', 'inventory:adjust', 'inventory:manage_recipes', 'inventory:transfer'],
   // P7 — accountants can reconcile and cancel intents in addition to existing grants.
   // P8 — accountants can view shift P&L as part of reporting.
   // P9 — accountants can view receipt status for reconciliation.
   // P13 — accountants can view customers and reviews.
-  accountant: ['customers:view',   'reviews:view',
+  accountant: ['customers:view', 'customers:create', 'reviews:view',
   'reviews:create',
   'reports:view_profit',   'payments:refund',
   'payments:reconcile',

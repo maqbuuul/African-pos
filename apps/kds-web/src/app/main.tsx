@@ -26,6 +26,7 @@ type Station = {
   description: string | null
   assignedStaffId: string | null
   isExpo: boolean
+  stationType: string
   expectedPrepTimeSeconds: number
   recallGraceSeconds: number
   sortOrder: number
@@ -48,6 +49,7 @@ type TicketItem = {
   seatNumber: number | null
   course: string | null
   kitchenNote: string | null
+  pourCost: number
   status: TicketItemStatus
   voidReason: string | null
   createdAt: string
@@ -68,6 +70,8 @@ type StationTicket = {
   orderId: string
   tableId: string | null
   firedByActorId: string
+  isRush: boolean
+  isVip: boolean
   status: string
   createdAt: string
   readyAt: string | null
@@ -730,6 +734,7 @@ function App() {
               <div className="pill-row">
                 <span className="pill">Polling every {POLL_INTERVAL_MS / 1000}s</span>
                 {selectedStation?.isExpo ? <span className="pill pill--warning">Expo station</span> : null}
+                {selectedStation?.stationType === 'bar' ? <span className="pill pill--info">Bar</span> : null}
                 {selectedStation ? <span className="pill">Prep target {formatDuration(selectedStation.expectedPrepTimeSeconds)}</span> : null}
                 {selectedStation ? <span className="pill">Recall {formatDuration(selectedStation.recallGraceSeconds)}</span> : null}
               </div>
@@ -743,7 +748,7 @@ function App() {
                     <strong>{batch.quantityTotal}x {batch.nameSnapshot}</strong>
                     <span>{batch.ticketIds.length} ticket(s)</span>
                     <span>Oldest age {formatDuration(batch.oldestAgeSeconds)}</span>
-                  </article>
+                </article>
                 ))}
               </div>
             ) : null}
@@ -751,14 +756,19 @@ function App() {
             {!isLoadingStationQueue && (!stationQueue || stationQueue.tickets.length === 0) ? <p className="empty-state">No active tickets for this station.</p> : null}
 
             <div className="ticket-grid">
-              {stationQueue?.tickets.map((ticket) => (
-                <article key={ticket.id} className="ticket-card">
+              {stationQueue?.tickets.map((ticket) => {
+                const ticketClasses = ['ticket-card']
+                if (ticket.isRush) ticketClasses.push('ticket-card--rush')
+                if (ticket.isVip) ticketClasses.push('ticket-card--vip')
+                return (
+                <article key={ticket.id} className={ticketClasses.join(' ')}>
                   <div className="ticket-card__header">
                     <div>
-                      <h3>Order {shortId(ticket.orderId)}</h3>
+                      <h3>Order {shortId(ticket.orderId)}{ticket.isVip ? <span className="vip-star" title="VIP">★</span> : null}</h3>
                       <p className="muted">Ticket {shortId(ticket.id)} {ticket.tableId ? `• Table ${shortId(ticket.tableId)}` : '• Walk-in'}</p>
                     </div>
                     <div className="ticket-card__meta">
+                      {ticket.isRush ? <span className="pill pill--warning">Rush</span> : null}
                       <span className={ticket.status === 'ready' ? 'pill pill--success' : 'pill'}>{ticket.status.replace('_', ' ')}</span>
                       <strong>{formatDuration(ticket.ageSeconds)}</strong>
                     </div>
@@ -793,6 +803,7 @@ function App() {
                             <span>Course {item.course ?? '—'}</span>
                             <span>Started {formatTimestamp(item.startedAt)}</span>
                             <span>Ready {formatTimestamp(item.readyAt)}</span>
+                            {selectedStation?.stationType === 'bar' && item.pourCost > 0 ? <span>Pour variance {item.pourCost}ml</span> : null}
                           </div>
 
                           {item.kitchenNote ? <p className="note-block">{item.kitchenNote}</p> : null}
@@ -820,7 +831,8 @@ function App() {
                     })}
                   </div>
                 </article>
-              ))}
+                )
+              })}
             </div>
           </section>
         </section>

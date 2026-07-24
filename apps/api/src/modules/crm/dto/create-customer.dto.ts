@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsPhoneNumber, IsString, Length } from 'class-validator'
+import { IsBoolean, IsEmail, IsOptional, IsPhoneNumber, IsString, Length } from 'class-validator'
 
 export class CreateCustomerDto {
   @IsOptional()
@@ -26,4 +26,8 @@ export class CreateCustomerDto {
   @IsOptional()
   @IsString()
   allergyNotes?: string
+
+  @IsOptional()
+  @IsBoolean()
+  creditRisk?: boolean
 }

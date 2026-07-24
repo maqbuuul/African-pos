@@ -377,6 +377,21 @@ export class ProductsService {
     return product
   }
 
+  // db-first: callable from another module's already-open transaction
+  // (e.g. OrdersService.addItem validating a product before adding an
+  // order item) without opening a second one.
+  async getProductById(db: Db, organizationId: string, id: string) {
+    return this.loadProduct(db, organizationId, id)
+  }
+
+  async getProductsByIds(db: Db, organizationId: string, ids: string[]) {
+    if (!ids.length) return []
+    return db
+      .select()
+      .from(products)
+      .where(and(eq(products.organizationId, organizationId), inArray(products.id, ids)))
+  }
+
   private async assertModifierGroupsBelongToTenant(db: Db, organizationId: string, modifierGroupIds: string[] | undefined) {
     if (!modifierGroupIds?.length) return
     const rows = await db

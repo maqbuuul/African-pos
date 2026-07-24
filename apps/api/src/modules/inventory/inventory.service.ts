@@ -1,5 +1,5 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { Inject, Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
+import { and, desc, eq, isNull, lte, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   goodsReceipts,
@@ -16,10 +16,13 @@ import {
   suppliers,
   wastageEvents,
   withTenantContext,
+  type Db,
 } from '@hospitality-os/database'
 
+import { OutboxService } from '../../core/events/outbox.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
 import type { CreateInventoryItemDto } from './dto/create-inventory-item.dto.js'
 import type { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto.js'
 import type { CreateRecipeDto } from './dto/create-recipe.dto.js'
@@ -31,7 +34,72 @@ import type { UpdateSupplierDto } from './dto/update-supplier.dto.js'
 
 @Injectable()
 export class InventoryService {
-  constructor(@Inject(APP_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(APP_POOL) private readonly pool: Pool,
+    @Inject(OutboxService) private readonly outbox: OutboxService,
+    @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
+  ) {}
+
+  private async emitStockMovementRecorded(
+    db: Db,
+    movement: { id: string; organizationId: string; locationId: string; movementType: string; quantity: number; inventoryItemId: string },
+  ): Promise<void> {
+    await this.outbox.persistAndEmit(db, {
+      eventType: 'StockMovementRecorded',
+      organizationId: movement.organizationId,
+      locationId: movement.locationId,
+      entityType: 'stock_movement',
+      entityId: movement.id,
+      data: { movementType: movement.movementType, quantity: movement.quantity, inventoryItemId: movement.inventoryItemId },
+      occurredAt: new Date(),
+    })
+  }
+
+  // db-first: callable from another module's already-open transaction (e.g.
+  // OrdersService.markServed deducting recipe-linked stock on a served
+  // item) — recipes/recipe_ingredients/stock_movements are inventory-owned.
+  async deductForRecipeSale(
+    db: Db,
+    authContext: AuthContext,
+    locationId: string,
+    productId: string,
+    orderItemId: string,
+    itemQty: number,
+  ): Promise<void> {
+    const [recipe] = await db
+      .select()
+      .from(recipes)
+      .where(and(eq(recipes.productId, productId), eq(recipes.organizationId, authContext.organizationId)))
+      .limit(1)
+    if (!recipe) return
+
+    const ingredients = await db
+      .select({ inventoryItemId: recipeIngredients.inventoryItemId, quantity: recipeIngredients.quantity, unit: recipeIngredients.unit })
+      .from(recipeIngredients)
+      .where(eq(recipeIngredients.recipeId, recipe.id))
+    if (ingredients.length === 0) return
+
+    const now = new Date()
+    for (const ing of ingredients) {
+      const totalDeduction = Math.abs(ing.quantity) * itemQty
+      const [movement] = await db
+        .insert(stockMovements)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId,
+          inventoryItemId: ing.inventoryItemId,
+          movementType: 'recipe_deduction',
+          quantity: -totalDeduction,
+          unit: ing.unit,
+          referenceType: 'order_item',
+          referenceId: orderItemId,
+          movedByActorId: authContext.actorId,
+          movedAt: now,
+        })
+        .returning()
+      if (movement) await this.emitStockMovementRecorded(db, movement)
+    }
+  }
 
   // =========================================================================
   // Suppliers
@@ -178,6 +246,7 @@ export class InventoryService {
       if (dto.items?.length) {
         await db.insert(purchaseOrderItems).values(
           dto.items.map((i) => ({
+            organizationId: auth.organizationId,
             purchaseOrderId: po.id,
             inventoryItemId: i.inventoryItemId,
             orderedQuantity: i.orderedQuantity,
@@ -211,7 +280,7 @@ export class InventoryService {
       for (const item of items) {
         const receivedQty = item.orderedQuantity
         await db.update(purchaseOrderItems).set({ receivedQuantity: receivedQty, actualUnitCost: item.expectedUnitCost }).where(eq(purchaseOrderItems.id, item.id))
-        await db.insert(stockMovements).values({
+        const [movement] = await db.insert(stockMovements).values({
           organizationId: auth.organizationId,
           locationId: po.locationId,
           inventoryItemId: item.inventoryItemId,
@@ -224,7 +293,8 @@ export class InventoryService {
           referenceId: purchaseOrderId,
           movedByActorId: auth.actorId,
           movedAt: now,
-        })
+        }).returning()
+        if (movement) await this.emitStockMovementRecorded(db, movement)
         await db.insert(stockLevels).values({
           organizationId: auth.organizationId,
           locationId: po.locationId,
@@ -268,33 +338,79 @@ export class InventoryService {
     })
   }
 
-  async completeStockCount(auth: AuthContext, id: string) {
+  async completeStockCount(auth: AuthContext, id: string, body: { items: { inventoryItemId: string; countedQuantity: number }[] }) {
     return withTenantContext(this.pool, auth.organizationId, async (db) => {
       const scRows = await db.select().from(stockCounts).where(and(eq(stockCounts.id, id), eq(stockCounts.organizationId, auth.organizationId)))
       if (!scRows.length) throw new NotFoundException('stock count not found')
       const sc = scRows[0]!
 
-      const currentLevels = await db.select().from(stockLevels).where(and(eq(stockLevels.stockLocationId, sc.stockLocationId ?? ''), eq(stockLevels.organizationId, auth.organizationId)))
+      const adjustments: typeof stockAdjustments.$inferInsert[] = []
+      const now = new Date()
 
-      for (const level of currentLevels) {
-        const variance = 0 - level.quantity
-        if (variance !== 0) {
-          await db.insert(stockAdjustments).values({
-            organizationId: auth.organizationId,
-            locationId: sc.locationId,
-            inventoryItemId: level.inventoryItemId,
-            stockLocationId: sc.stockLocationId,
-            stockCountId: sc.id,
-            expectedQuantity: level.quantity,
-            countedQuantity: 0,
-            variance,
-            reason: 'stock count adjustment',
-            adjustedByActorId: auth.actorId,
-          })
-        }
+      for (const item of body.items) {
+        const [level] = await db
+          .select()
+          .from(stockLevels)
+          .where(and(eq(stockLevels.inventoryItemId, item.inventoryItemId), eq(stockLevels.stockLocationId, sc.stockLocationId ?? '')))
+        const expected = level?.quantity ?? 0
+        const counted = item.countedQuantity
+        const variance = counted - expected
+
+        if (variance === 0) continue
+
+        const pctVariance = expected > 0 ? Math.abs(variance) / expected : 1
+        const isLarge = pctVariance > 0.1 || Math.abs(variance) > 1000
+
+        adjustments.push({
+          organizationId: auth.organizationId,
+          locationId: sc.locationId,
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: sc.stockLocationId,
+          stockCountId: sc.id,
+          expectedQuantity: expected,
+          countedQuantity: counted,
+          variance,
+          reason: 'stock count adjustment',
+          adjustedByActorId: auth.actorId,
+          approvedByActorId: isLarge ? null : auth.actorId,
+          approvedAt: isLarge ? null : now,
+        })
+
+        await db.insert(stockLevels).values({
+          organizationId: auth.organizationId,
+          locationId: sc.locationId,
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: sc.stockLocationId,
+          quantity: counted,
+          unit: level?.unit ?? 'piece',
+        }).onConflictDoUpdate({
+          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
+          set: { quantity: counted, updatedAt: now },
+        })
+
+        const [movement] = await db.insert(stockMovements).values({
+          organizationId: auth.organizationId,
+          locationId: sc.locationId,
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: sc.stockLocationId,
+          movementType: 'adjustment',
+          quantity: variance,
+          unit: level?.unit ?? 'piece',
+          referenceType: 'stock_count',
+          referenceId: sc.id,
+          reason: isLarge ? 'stock count adjustment (pending approval)' : 'stock count adjustment',
+          movedByActorId: auth.actorId,
+          movedAt: now,
+        }).returning()
+        if (movement) await this.emitStockMovementRecorded(db, movement)
       }
 
-      const updatedRows = await db.update(stockCounts).set({ status: 'completed', approvedByActorId: auth.actorId, approvedAt: new Date() }).where(eq(stockCounts.id, id)).returning()
+      if (adjustments.length) {
+        await db.insert(stockAdjustments).values(adjustments)
+      }
+
+      const status = adjustments.some((a) => a.approvedByActorId === null) ? 'submitted' : 'approved'
+      const updatedRows = await db.update(stockCounts).set({ status, approvedByActorId: status === 'approved' ? auth.actorId : null, approvedAt: status === 'approved' ? now : null }).where(eq(stockCounts.id, id)).returning()
       return updatedRows[0]
     })
   }
@@ -333,7 +449,7 @@ export class InventoryService {
       const r = rs[0]!
       if (dto.ingredients?.length) {
         await db.insert(recipeIngredients).values(
-          dto.ingredients.map((ing) => ({ recipeId: r.id, inventoryItemId: ing.inventoryItemId, quantity: ing.quantity, unit: ing.unit, notes: ing.notes ?? null })),
+          dto.ingredients.map((ing) => ({ organizationId: auth.organizationId, recipeId: r.id, inventoryItemId: ing.inventoryItemId, quantity: ing.quantity, unit: ing.unit, notes: ing.notes ?? null })),
         )
       }
       const ingredients = await db.select().from(recipeIngredients).where(eq(recipeIngredients.recipeId, r.id))
@@ -367,7 +483,7 @@ export class InventoryService {
         recordedByActorId: auth.actorId,
       }).returning()
 
-      await db.insert(stockMovements).values({
+      const [movement] = await db.insert(stockMovements).values({
         organizationId: auth.organizationId,
         locationId: auth.locationId ?? '',
         inventoryItemId: dto.inventoryItemId,
@@ -377,7 +493,8 @@ export class InventoryService {
         unit: dto.unit,
         reason: dto.reason,
         movedByActorId: auth.actorId,
-      })
+      }).returning()
+      if (movement) await this.emitStockMovementRecorded(db, movement)
 
       await db.insert(stockLevels).values({
         organizationId: auth.organizationId,
@@ -392,6 +509,159 @@ export class InventoryService {
       })
 
       return evts[0]
+    })
+  }
+
+  // =========================================================================
+  // Stock Transfers
+  // =========================================================================
+  async createStockTransfer(auth: AuthContext, dto: { sourceLocationId: string; destLocationId: string; items: { inventoryItemId: string; quantity: number; unit: string }[] }) {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const ref = crypto.randomUUID()
+      const now = new Date()
+      const movements: typeof stockMovements.$inferInsert[] = []
+
+      for (const item of dto.items) {
+        movements.push({
+          organizationId: auth.organizationId,
+          locationId: auth.locationId ?? '',
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: dto.sourceLocationId,
+          movementType: 'transfer_out',
+          quantity: -Math.abs(item.quantity),
+          unit: item.unit,
+          referenceType: 'transfer',
+          referenceId: ref,
+          transferReferenceId: ref,
+          movedByActorId: auth.actorId,
+          movedAt: now,
+        })
+        movements.push({
+          organizationId: auth.organizationId,
+          locationId: auth.locationId ?? '',
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: dto.destLocationId,
+          movementType: 'transfer_in',
+          quantity: Math.abs(item.quantity),
+          unit: item.unit,
+          referenceType: 'transfer',
+          referenceId: ref,
+          transferReferenceId: ref,
+          movedByActorId: auth.actorId,
+          movedAt: now,
+        })
+
+        await db.insert(stockLevels).values({
+          organizationId: auth.organizationId,
+          locationId: auth.locationId ?? '',
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: dto.sourceLocationId,
+          quantity: -Math.abs(item.quantity),
+          unit: item.unit,
+        }).onConflictDoUpdate({
+          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
+          set: { quantity: sql`${stockLevels.quantity} - ${Math.abs(item.quantity)}`, updatedAt: now },
+        })
+
+        await db.insert(stockLevels).values({
+          organizationId: auth.organizationId,
+          locationId: auth.locationId ?? '',
+          inventoryItemId: item.inventoryItemId,
+          stockLocationId: dto.destLocationId,
+          quantity: Math.abs(item.quantity),
+          unit: item.unit,
+        }).onConflictDoUpdate({
+          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
+          set: { quantity: sql`${stockLevels.quantity} + ${Math.abs(item.quantity)}`, updatedAt: now },
+        })
+      }
+
+      if (movements.length) {
+        const inserted = await db.insert(stockMovements).values(movements).returning()
+        for (const movement of inserted) {
+          await this.emitStockMovementRecorded(db, movement)
+        }
+      }
+
+      return { transferReferenceId: ref, itemCount: dto.items.length }
+    })
+  }
+
+  async listStockTransfers(auth: AuthContext) {
+    return withTenantContext(this.pool, auth.organizationId, (db) =>
+      db.select().from(stockMovements).where(and(eq(stockMovements.organizationId, auth.organizationId), eq(stockMovements.movementType, 'transfer_out'))).orderBy(desc(stockMovements.movedAt)),
+    )
+  }
+
+  // =========================================================================
+  // Recipe Cost
+  // =========================================================================
+  async getRecipeCost(auth: AuthContext, id: string) {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const raws = await db.select().from(recipes).where(and(eq(recipes.id, id), eq(recipes.organizationId, auth.organizationId)))
+      if (!raws.length) throw new NotFoundException('recipe not found')
+      const ingredients = await db
+        .select({
+          inventoryItemId: recipeIngredients.inventoryItemId,
+          quantity: recipeIngredients.quantity,
+          unit: recipeIngredients.unit,
+          unitCost: inventoryItems.unitCost,
+          currency: inventoryItems.currency,
+          itemName: inventoryItems.name,
+        })
+        .from(recipeIngredients)
+        .leftJoin(inventoryItems, eq(recipeIngredients.inventoryItemId, inventoryItems.id))
+        .where(eq(recipeIngredients.recipeId, id))
+      let totalCost = 0
+      const rows = ingredients.map((ing) => {
+        const lineCost = Math.round((ing.quantity ?? 0) * (ing.unitCost ?? 0))
+        totalCost += lineCost
+        return { inventoryItemId: ing.inventoryItemId, itemName: ing.itemName, quantity: ing.quantity, unit: ing.unit, unitCost: ing.unitCost, lineCost }
+      })
+      return { recipeId: id, totalCost, currency: ingredients[0]?.currency ?? 'KES', rows }
+    })
+  }
+
+  // =========================================================================
+  // Standalone Stock Adjustment
+  // =========================================================================
+  async createStockAdjustment(auth: AuthContext, dto: { inventoryItemId: string; stockLocationId: string; newQuantity: number; reason: string }) {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const [item] = await db.select().from(inventoryItems).where(and(eq(inventoryItems.id, dto.inventoryItemId), eq(inventoryItems.organizationId, auth.organizationId)))
+      if (!item) throw new NotFoundException('inventory item not found')
+      const [level] = await db
+        .select()
+        .from(stockLevels)
+        .where(and(eq(stockLevels.inventoryItemId, dto.inventoryItemId), eq(stockLevels.stockLocationId, dto.stockLocationId)))
+      const currentQty = level?.quantity ?? 0
+      const variance = dto.newQuantity - currentQty
+      const now = new Date()
+      const [movement] = await db.insert(stockMovements).values({
+        organizationId: auth.organizationId,
+        locationId: auth.locationId ?? '',
+        inventoryItemId: dto.inventoryItemId,
+        stockLocationId: dto.stockLocationId,
+        movementType: 'adjustment',
+        quantity: variance,
+        unit: level?.unit ?? item.unit,
+        referenceType: 'stock_adjustment',
+        reason: dto.reason,
+        movedByActorId: auth.actorId,
+        movedAt: now,
+      }).returning()
+      if (movement) await this.emitStockMovementRecorded(db, movement)
+      await db.insert(stockLevels).values({
+        organizationId: auth.organizationId,
+        locationId: auth.locationId ?? '',
+        inventoryItemId: dto.inventoryItemId,
+        stockLocationId: dto.stockLocationId,
+        quantity: dto.newQuantity,
+        unit: level?.unit ?? item.unit,
+      }).onConflictDoUpdate({
+        target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
+        set: { quantity: dto.newQuantity, updatedAt: now },
+      })
+      return { inventoryItemId: dto.inventoryItemId, stockLocationId: dto.stockLocationId, previousQuantity: currentQty, newQuantity: dto.newQuantity, variance }
     })
   }
 
@@ -532,6 +802,45 @@ export class InventoryService {
 
       const totals = rows.reduce((acc, r) => ({ opening: acc.opening + r.opening, received: acc.received + r.received, issued: acc.issued + r.issued, transferredOut: acc.transferredOut + r.transferredOut, wastage: acc.wastage + r.wastage, adjusted: acc.adjusted + r.adjusted, closing: acc.closing + r.closing, valueReceived: acc.valueReceived + r.valueReceived, valueIssued: acc.valueIssued + r.valueIssued, valueWastage: acc.valueWastage + r.valueWastage, closingValue: acc.closingValue + r.closingValue }), { opening: 0, received: 0, issued: 0, transferredOut: 0, wastage: 0, adjusted: 0, closing: 0, valueReceived: 0, valueIssued: 0, valueWastage: 0, closingValue: 0 })
       return { from, to, currency: items[0]?.currency ?? 'KES', totals, rows }
+    })
+  }
+
+  async supplierCreditReminders(auth: AuthContext): Promise<{ reminders: { supplierId: string; supplierName: string; dueOrders: number }[] }> {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const threeDaysFromNow = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+      const dueOrders = await db
+        .select()
+        .from(purchaseOrders)
+        .where(
+          and(
+            eq(purchaseOrders.organizationId, auth.organizationId),
+            eq(purchaseOrders.status, 'sent'),
+            lte(purchaseOrders.expectedDeliveryDate, threeDaysFromNow),
+          ),
+        )
+      const reminders: { supplierId: string; supplierName: string; dueOrders: number }[] = []
+      for (const po of dueOrders) {
+        const [supplier] = await db.select().from(suppliers).where(eq(suppliers.id, po.supplierId))
+        if (!supplier) continue
+        await this.staffNotifications.create(db, {
+          organizationId: auth.organizationId,
+          locationId: po.locationId,
+          notificationType: 'supplier_credit_reminder',
+          message: `Supplier "${supplier.name}" has order ${po.orderNumber} due ${po.expectedDeliveryDate?.toISOString().slice(0, 10)}`,
+        })
+        reminders.push({ supplierId: supplier.id, supplierName: supplier.name, dueOrders: 1 })
+      }
+      return { reminders }
+    })
+  }
+
+  async sellByWeight(auth: AuthContext, itemId: string, weightGrams: number, pricePerKg: number): Promise<{ totalPrice: number; weightKg: number }> {
+    return withTenantContext(this.pool, auth.organizationId, async (db) => {
+      const [item] = await db.select().from(inventoryItems).where(and(eq(inventoryItems.id, itemId), eq(inventoryItems.organizationId, auth.organizationId)))
+      if (!item) throw new NotFoundException('inventory item not found')
+      const weightKg = weightGrams / 1000
+      const totalPrice = Math.round(weightKg * pricePerKg)
+      return { totalPrice, weightKg }
     })
   }
 }

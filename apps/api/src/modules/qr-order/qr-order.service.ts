@@ -1,27 +1,29 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
-  customerFeedback,
   menuCategories,
   menus,
   modifierGroups,
   modifiers,
-  orderItemModifiers,
   orderItems,
   orders,
   productModifierGroups,
   productPrices,
   products,
   restaurantTables,
-  staffNotifications,
   withTenantContext,
 } from '@hospitality-os/database'
 
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { AuditLogService } from '../../core/audit/audit-log.service.js'
+import { CrmService } from '../crm/crm.service.js'
+import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
+import { OrdersService } from '../orders/orders.service.js'
 import { PaymentsService } from '../payments/payments.service.js'
+import { TablesService } from '../restaurant/tables.service.js'
 import { signTableSessionToken, type TableSessionClaims } from './table-session.js'
 
 export interface OrderItemInput {
@@ -29,6 +31,7 @@ export interface OrderItemInput {
   quantity: number
   modifierIds?: string[]
   notes?: string
+  sessionLabel?: string
 }
 
 @Injectable()
@@ -36,6 +39,11 @@ export class QrOrderService {
   constructor(
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(PaymentsService) private readonly paymentsService: PaymentsService,
+    @Inject(AuditLogService) private readonly auditLog: AuditLogService,
+    @Inject(TablesService) private readonly tablesService: TablesService,
+    @Inject(OrdersService) private readonly ordersService: OrdersService,
+    @Inject(CrmService) private readonly crmService: CrmService,
+    @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
   ) {}
 
   async createSession(qrSlug: string) {
@@ -77,86 +85,12 @@ export class QrOrderService {
   async submitOrder(session: TableSessionClaims, items: OrderItemInput[]) {
     if (items.length === 0) throw new BadRequestException('order must contain at least one item')
     return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const table = await db
-        .select()
-        .from(restaurantTables)
-        .where(and(eq(restaurantTables.id, session.tableId), eq(restaurantTables.organizationId, session.organizationId)))
-        .limit(1)
-        .then((r) => r[0])
-      if (!table) throw new NotFoundException('table not found')
-      const [order] = await db
-        .insert(orders)
-        .values({ organizationId: session.organizationId, locationId: session.locationId, tableId: session.tableId, channel: 'qr_table', status: 'draft', currency: 'KES' })
-        .returning()
-      if (!order) throw new Error('failed to create order')
-      const currency = 'KES'
-      const orderItemRows: (typeof orderItems.$inferSelect)[] = []
-      for (const item of items) {
-        const product = await db
-          .select()
-          .from(products)
-          .where(and(eq(products.id, item.productId), eq(products.organizationId, session.organizationId)))
-          .limit(1)
-          .then((r) => r[0])
-        if (!product) continue
-        const activePrice = await db
-          .select()
-          .from(productPrices)
-          .where(and(eq(productPrices.productId, item.productId), eq(productPrices.organizationId, session.organizationId), isNull(productPrices.effectiveTo)))
-          .limit(1)
-          .then((r) => r[0])
-        const unitPrice = activePrice?.priceAmount ?? 0
-        let modsPrice = 0
-        if (item.modifierIds && item.modifierIds.length > 0) {
-          for (const modId of item.modifierIds) {
-            const mod = await db
-              .select()
-              .from(modifiers)
-              .where(and(eq(modifiers.id, modId), eq(modifiers.organizationId, session.organizationId)))
-              .limit(1)
-              .then((r) => r[0])
-            if (!mod) continue
-            modsPrice += mod.priceDelta
-          }
-        }
-        const [oi] = await db
-          .insert(orderItems)
-          .values({
-            organizationId: session.organizationId, locationId: session.locationId, orderId: order.id, productId: product.id,
-            nameSnapshot: product.name, localNameSnapshot: product.localName,
-            quantity: item.quantity, kitchenNote: item.notes ?? null,
-            unitPriceAmount: unitPrice, modifiersPriceAmount: modsPrice, totalAmount: (unitPrice + modsPrice) * item.quantity,
-            discountAmount: 0, currency, status: 'draft',
-          })
-          .returning()
-        if (!oi) throw new Error('failed to create order item')
-        if (item.modifierIds && item.modifierIds.length > 0) {
-          for (const modId of item.modifierIds) {
-            const mod = await db
-              .select()
-              .from(modifiers)
-              .where(and(eq(modifiers.id, modId), eq(modifiers.organizationId, session.organizationId)))
-              .limit(1)
-              .then((r) => r[0])
-            if (!mod) continue
-            await db.insert(orderItemModifiers).values({
-              organizationId: session.organizationId, orderItemId: oi.id,
-              modifierId: mod.id, nameSnapshot: mod.name, priceDeltaAmount: mod.priceDelta, currency,
-            })
-          }
-        }
-        orderItemRows.push(oi)
-      }
-      const [bill] = await db
-        .insert(bills)
-        .values({
-          organizationId: session.organizationId, locationId: session.locationId, orderId: order.id,
-          billNumber: 1, status: 'open', currency, subtotalAmount: 0, discountAmount: 0,
-          taxAmount: 0, serviceChargeAmount: 0, tipAmount: 0, totalAmount: 0,
-        })
-        .returning()
-      if (!bill) throw new Error('failed to create bill')
-      return { order, items: orderItemRows, bill }
+      await this.tablesService.getByIdInTx(db, session.organizationId, session.tableId)
+      return this.ordersService.createDraftOrderWithItems(
+        db,
+        { organizationId: session.organizationId, locationId: session.locationId, tableId: session.tableId, currency: 'KES' },
+        items,
+      )
     })
   }
 
@@ -179,14 +113,13 @@ export class QrOrderService {
 
   async requestWaiter(session: TableSessionClaims, reason?: string) {
     return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const [notification] = await db.insert(staffNotifications).values({
+      const notification = await this.staffNotifications.create(db, {
         organizationId: session.organizationId,
         locationId: session.locationId,
         tableId: session.tableId,
         notificationType: 'waiter_request',
         reason: reason ?? null,
-        status: 'pending',
-      }).returning()
+      })
       return { message: 'waiter has been notified', notification }
     })
   }
@@ -196,33 +129,139 @@ export class QrOrderService {
       throw new BadRequestException('rating must be between 1 and 5')
     }
     return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const [item] = await db
-        .select({ id: orderItems.id })
-        .from(orderItems)
-        .where(and(eq(orderItems.id, orderItemId), eq(orderItems.organizationId, session.organizationId)))
-        .limit(1)
-      if (!item) throw new NotFoundException('order item not found')
+      await this.ordersService.getOrderItemById(db, session.organizationId, orderItemId)
 
-      const [feedback] = await db.insert(customerFeedback).values({
-        organizationId: session.organizationId,
+      const feedback = await this.crmService.createFeedbackInTx(db, this.sessionAuthContext(session), {
         locationId: session.locationId,
         orderItemId,
         source: 'qr_table',
         rating,
-        isNegative: rating < 3,
-        comment: comment ?? null,
-      }).returning()
+        comment,
+      })
       return { orderItemId, rating, comment: comment ?? null, message: 'feedback recorded', feedback }
     })
   }
 
-  async payMpesa(session: TableSessionClaims, billId: string, customerPhone: string, idempotencyKey: string) {
-    const authContext: AuthContext = {
-      actorType: 'staff', actorId: '00000000-0000-0000-0000-000000000000',
-      organizationId: session.organizationId, locationId: session.locationId,
+  async fireCourse(session: TableSessionClaims, orderId: string, courseName: string) {
+    const result = await this.ordersService.sendCourse(this.sessionAuthContext(session), orderId, courseName)
+
+    await this.auditLog.record({
+      organizationId: session.organizationId,
+      locationId: session.locationId,
+      actorType: 'system',
+      actorId: session.tableId,
+      action: 'qr_order.course_fired',
+      entityType: 'order',
+      entityId: orderId,
+      newValue: { courseName, firedItemIds: result.firedItemIds },
+    })
+
+    return { message: `course "${courseName}" fired`, firedItemIds: result.firedItemIds }
+  }
+
+  async rateDish(session: TableSessionClaims, orderItemId: string, rating: number, comment?: string) {
+    if (rating < 1 || rating > 5) {
+      throw new BadRequestException('rating must be between 1 and 5')
     }
-    return this.paymentsService.takeMpesa(authContext, billId, {
-      amount: 0, currency: 'KES', idempotencyKey, customerPhone,
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const item = await this.ordersService.getOrderItemById(db, session.organizationId, orderItemId)
+
+      const feedback = await this.crmService.createFeedbackInTx(db, this.sessionAuthContext(session), {
+        locationId: session.locationId,
+        orderItemId,
+        orderId: item.orderId,
+        source: 'qr_table',
+        rating,
+        comment,
+      })
+
+      return { orderItemId, rating, comment: comment ?? null, message: 'rating recorded', feedback }
+    })
+  }
+
+  async payMpesa(session: TableSessionClaims, orderId: string, customerPhone: string, idempotencyKey: string) {
+    const authContext = this.sessionAuthContext(session)
+    // The client only ever holds an orderId (bills are created and tracked
+    // server-side via requestBill) — resolve the open bill for this order
+    // before delegating to PaymentsService, which operates on bill ids.
+    const bill = await withTenantContext(this.pool, session.organizationId, async (db) => {
+      return db
+        .select()
+        .from(bills)
+        .where(and(eq(bills.orderId, orderId), eq(bills.organizationId, session.organizationId), eq(bills.status, 'open')))
+        .limit(1)
+        .then((r) => r[0])
+    })
+    if (!bill) throw new NotFoundException('no open bill for this order — request the bill first')
+
+    const { outstandingAmount, currency } = await this.paymentsService.getOutstandingBalance(authContext, bill.id)
+    if (outstandingAmount <= 0) {
+      throw new BadRequestException('bill has no outstanding balance to pay')
+    }
+    return this.paymentsService.takeMpesa(authContext, bill.id, {
+      amount: outstandingAmount, currency, idempotencyKey, customerPhone,
+    })
+  }
+
+  async requestBill(session: TableSessionClaims, orderId: string) {
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const order = await this.ordersService.getById(this.sessionAuthContext(session), orderId)
+      await this.ordersService.requestBillInTx(db, session.organizationId, session.locationId, order)
+      if (order.tableId) {
+        await this.tablesService.setStatusInTx(db, session.organizationId, order.tableId, 'bill_requested')
+      }
+      return { message: 'bill requested' }
+    })
+  }
+
+  async payWithWaiter(session: TableSessionClaims, orderId: string) {
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const order = await this.ordersService.getById(this.sessionAuthContext(session), orderId)
+      await this.ordersService.markForWaiterPayment(db, session.organizationId, order)
+      if (order.tableId) {
+        await this.tablesService.setStatusInTx(db, session.organizationId, order.tableId, 'payment_pending')
+      }
+      await this.auditLog.record({
+        organizationId: session.organizationId, locationId: session.locationId,
+        actorType: 'system', actorId: session.tableId,
+        action: 'qr_order.pay_with_waiter', entityType: 'order', entityId: orderId,
+        newValue: { method: 'waiter' },
+      })
+      return { message: 'order marked for payment at counter' }
+    })
+  }
+
+  async refreshMenu(session: TableSessionClaims) {
+    return this.getMenu(session)
+  }
+
+  async captureLoyalty(session: TableSessionClaims, phone: string) {
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const customer = await this.crmService.findOrCreateByPhoneInTx(db, this.sessionAuthContext(session), { phone })
+      const { account, created } = await this.crmService.findOrCreateLoyaltyAccountInTx(db, session.organizationId, customer.id)
+      return {
+        message: created ? 'loyalty account created' : 'loyalty account already exists',
+        customerId: customer.id,
+        account,
+      }
+    })
+  }
+
+  async getOrderStatus(session: TableSessionClaims, orderId: string) {
+    return withTenantContext(this.pool, session.organizationId, async (db) => {
+      const order = await db
+        .select()
+        .from(orders)
+        .where(and(eq(orders.id, orderId), eq(orders.organizationId, session.organizationId)))
+        .limit(1)
+        .then((r) => r[0])
+      if (!order) throw new NotFoundException('order not found')
+      const [items, billList, table] = await Promise.all([
+        db.select().from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.organizationId, session.organizationId))),
+        db.select().from(bills).where(and(eq(bills.orderId, order.id), eq(bills.organizationId, session.organizationId))),
+        db.select().from(restaurantTables).where(eq(restaurantTables.id, session.tableId)).limit(1).then((r) => r[0]),
+      ])
+      return { order, items, bills: billList, tableStatus: table?.status ?? null }
     })
   }
 
@@ -257,5 +296,17 @@ export class QrOrderService {
       ])
       return { statusBreakdown, occupancyStats }
     })
+  }
+
+  // A table-session customer has no staff/user identity — this synthesizes
+  // the AuthContext every downstream service call expects, consistent with
+  // how this file already did it inline for KdsService before this pass.
+  private sessionAuthContext(session: TableSessionClaims): AuthContext {
+    return {
+      actorType: 'customer',
+      actorId: session.tableId,
+      organizationId: session.organizationId,
+      locationId: session.locationId,
+    }
   }
 }

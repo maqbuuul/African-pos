@@ -134,6 +134,27 @@
       "when": 1785900000000,
       "tag": "0018_p12_staff_attendance",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1786000000000,
+      "tag": "0019_p13_fix_credit_risk",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784910239867,
+      "tag": "0020_reconcile_schema_drift",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784910701173,
+      "tag": "0021_p_outbox_processed_at",
+      "breakpoints": true
     }
   ]
 }

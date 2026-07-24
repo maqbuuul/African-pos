@@ -12,9 +12,11 @@
     "test": "vitest run --passWithNoTests",
     "lint": "eslint ."
   },
+  "dependencies": {
+    "@hospitality-os/domain": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.7.3",
     "vitest": "^2.1.9"
   }
 }
-

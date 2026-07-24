@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, eq } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import { staff, withTenantContext } from '@hospitality-os/database'
+import { staff, withTenantContext, type Db } from '@hospitality-os/database'
 
 import { AuditLogService } from '../audit/audit-log.service.js'
 import { APP_POOL } from '../tenant/tenant.constants.js'
@@ -51,6 +51,17 @@ export class StaffService {
       entityId: row.id,
     })
 
+    return row
+  }
+
+  // db-first: callable from another module's already-open transaction
+  // (e.g. KdsService validating an assigned staff member at a location).
+  async getActiveMember(db: Db, organizationId: string, locationId: string, staffId: string) {
+    const [row] = await db
+      .select()
+      .from(staff)
+      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId), eq(staff.locationId, locationId)))
+    if (!row) throw new NotFoundException('assigned staff member not found at this location')
     return row
   }
 }

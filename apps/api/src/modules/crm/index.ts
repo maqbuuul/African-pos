@@ -14,5 +14,6 @@ export const crmModule = {
   imports: [AuditModule],
   controllers: [CrmController],
   providers: [CrmService],
+  exports: [CrmService],
 })
 export class CrmModule {}

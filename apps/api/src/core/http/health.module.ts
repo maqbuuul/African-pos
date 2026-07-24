@@ -1,13 +1,13 @@
 import { Controller, Get, Module } from '@nestjs/common'
 
+import { SkipEnvelope } from '../response-envelope/skip-envelope.decorator.js'
+
 @Controller('health')
+@SkipEnvelope()
 class HealthController {
   @Get()
   check() {
-    return {
-      data: { status: 'ok', service: 'api' },
-      meta: { timestamp: new Date().toISOString() },
-    }
+    return { status: 'ok', service: 'api', timestamp: new Date().toISOString() }
   }
 }
 

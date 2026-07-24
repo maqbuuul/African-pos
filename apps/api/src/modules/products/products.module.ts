@@ -21,5 +21,6 @@ export const productsModule = {
   imports: [AuditModule, PermissionsModule],
   controllers: [MenusController, CategoriesController, ModifierGroupsController, ProductsController],
   providers: [MenusService, CategoriesService, ModifierGroupsService, ProductsService],
+  exports: [ProductsService, CategoriesService, ModifierGroupsService],
 })
 export class ProductsModule {}

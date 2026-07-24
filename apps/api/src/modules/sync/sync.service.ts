@@ -6,6 +6,8 @@ import {
   syncConflicts,
   syncCursors,
   syncOperations,
+  taxComplianceSubmissions,
+  receipts,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -44,6 +46,68 @@ export class SyncService {
         )
         if (existing) {
           accepted.push({ opId: op.opId, serverEntityId: existing.entityId })
+          continue
+        }
+
+        if (op.entityType === 'etims_submission') {
+          const [recorded] = await db
+            .insert(syncOperations)
+            .values({
+              organizationId: authContext.organizationId,
+              locationId: op.locationId,
+              deviceId: op.deviceId,
+              actorId: op.actorId,
+              entityType: op.entityType,
+              entityId: op.entityId,
+              operation: op.operation,
+              payload: op.payload as Record<string, unknown>,
+              baseVersion: op.baseVersion ?? null,
+              idempotencyKey: op.idempotencyKey ?? op.opId,
+              status: 'synced',
+            })
+            .returning()
+          if (!recorded) throw new Error('failed to record sync operation')
+
+          const payload = op.payload as { receiptId?: string; billId?: string }
+          if (payload?.receiptId) {
+            try {
+              const [receipt] = await db
+                .select()
+                .from(receipts)
+                .where(and(eq(receipts.id, payload.receiptId), eq(receipts.organizationId, authContext.organizationId)))
+                .limit(1)
+              if (receipt) {
+                const [submission] = await db
+                  .insert(taxComplianceSubmissions)
+                  .values({
+                    organizationId: authContext.organizationId,
+                    locationId: receipt.locationId,
+                    receiptId: receipt.id,
+                    country: 'KE',
+                    provider: 'kra_etims',
+                    submissionStatus: 'queued',
+                    requestPayload: op.payload as Record<string, unknown>,
+                  })
+                  .returning()
+                if (submission) {
+                  await this.auditLog.record({
+                    organizationId: authContext.organizationId,
+                    locationId: receipt.locationId,
+                    actorType: 'system',
+                    actorId: authContext.actorId,
+                    action: 'tax_compliance.queued_from_sync',
+                    entityType: 'tax_compliance_submission',
+                    entityId: submission.id,
+                    newValue: { receiptId: receipt.id, source: 'offline_sync' },
+                  })
+                }
+              }
+            } catch {
+              // best-effort forwarding; the sync op is recorded regardless
+            }
+          }
+
+          accepted.push({ opId: op.opId, serverEntityId: recorded.entityId })
           continue
         }
 
@@ -214,6 +278,28 @@ export class SyncService {
     })
   }
 
+  async getDeviceSyncHealth(
+    authContext: AuthContext,
+    deviceId: string,
+  ) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [cursor] = await db
+        .select()
+        .from(syncCursors)
+        .where(and(eq(syncCursors.deviceId, deviceId), eq(syncCursors.organizationId, authContext.organizationId)))
+        .limit(1)
+      if (!cursor) throw new Error('device not found')
+      return {
+        deviceId: cursor.deviceId,
+        batteryLevel: cursor.batteryLevel ?? null,
+        onBattery: cursor.onBattery,
+        lastSyncedAt: cursor.lastSyncedAt,
+        syncStatus: cursor.syncStatus,
+        pendingOperationCount: cursor.pendingOperationCount,
+      }
+    })
+  }
+
   async listConflicts(
     authContext: AuthContext,
     resolution?: string,
@@ -299,6 +385,32 @@ export class SyncService {
         .returning()
 
       return cursor ?? null
+    })
+  }
+
+  async queueOfflineETimsSubmission(
+    authContext: AuthContext,
+    receiptId: string,
+    billId: string,
+  ) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [op] = await db
+        .insert(syncOperations)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId: authContext.locationId ?? '',
+          entityType: 'etims_submission',
+          entityId: receiptId,
+          operation: 'create',
+          payload: { receiptId, billId } as Record<string, unknown>,
+          deviceId: authContext.actorId,
+          actorId: authContext.actorId,
+          idempotencyKey: `etims_${receiptId}`,
+          status: 'pending',
+        })
+        .returning()
+
+      return op
     })
   }
 

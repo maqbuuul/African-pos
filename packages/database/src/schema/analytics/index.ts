@@ -17,12 +17,14 @@ export const events = pgTable('events', {
   entityId: uuid('entity_id').notNull(),
   data: jsonb('data'),
   occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  processedAt: timestamp('processed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index('events_organization_id_idx').on(table.organizationId),
   index('events_location_id_idx').on(table.locationId),
   index('events_entity_type_idx').on(table.entityType, table.entityId),
   index('events_occurred_at_idx').on(table.occurredAt),
+  index('events_unprocessed_idx').on(table.processedAt),
 ])
 
 export const reportSnapshots = pgTable('report_snapshots', {

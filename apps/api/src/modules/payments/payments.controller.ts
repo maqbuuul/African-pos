@@ -4,8 +4,11 @@ import type { Request } from 'express'
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
 import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { ValidatedBody } from '../../core/validation/validated-body.decorator.js'
+import { ChargeBarTabDto } from './dto/charge-bar-tab.dto.js'
 import { ConnectIntegrationDto } from './dto/connect-integration.dto.js'
+import { OpenBarTabDto } from './dto/open-bar-tab.dto.js'
 import { RequestRefundDto } from './dto/request-refund.dto.js'
+import { SettleBarTabDto } from './dto/settle-bar-tab.dto.js'
 import { TakeBankTransferPaymentDto } from './dto/take-bank-transfer-payment.dto.js'
 import { TakeCashPaymentDto } from './dto/take-cash-payment.dto.js'
 import { TakeCardPaymentDto } from './dto/take-card-payment.dto.js'
@@ -112,6 +115,61 @@ export class PaymentsController {
     @Req() req: Request,
   ) {
     return this.paymentsService.requestRefund(req.authContext!, id, dto, this.approvalRequestId(req))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bar tabs (card pre-authorization / mobile-money deposit hold)
+  // ---------------------------------------------------------------------------
+
+  // POST /api/v1/bills/:billId/tabs/open
+  @Post('bills/:billId/tabs/open')
+  @RequirePermission('payments:take_card')
+  openTab(
+    @Param('billId') billId: string,
+    @ValidatedBody(OpenBarTabDto) dto: OpenBarTabDto,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.openTab(req.authContext!, billId, dto)
+  }
+
+  // POST /api/v1/tabs/:tabId/charge
+  @Post('tabs/:tabId/charge')
+  @HttpCode(200)
+  @RequirePermission('payments:take_card')
+  chargeTab(
+    @Param('tabId') tabId: string,
+    @ValidatedBody(ChargeBarTabDto) dto: ChargeBarTabDto,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.chargeTab(req.authContext!, tabId, dto)
+  }
+
+  // POST /api/v1/tabs/:tabId/settle
+  @Post('tabs/:tabId/settle')
+  @HttpCode(200)
+  @RequirePermission('payments:take_card')
+  settleTab(
+    @Param('tabId') tabId: string,
+    @ValidatedBody(SettleBarTabDto) _dto: SettleBarTabDto,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.settleTab(req.authContext!, tabId)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Split-check WhatsApp payment link
+  // ---------------------------------------------------------------------------
+
+  // POST /api/v1/orders/:id/split/:splitId/payment-link
+  // splitId is the bill ID for the split share.
+  @Post('orders/:id/split/:splitId/payment-link')
+  @RequirePermission('payments:take_mobile_money')
+  generateSplitPaymentLink(
+    @Param('id') orderId: string,
+    @Param('splitId') billId: string,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.generateSplitPaymentLink(req.authContext!, orderId, billId, billId)
   }
 
   // POST /api/v1/integrations/payments/connect

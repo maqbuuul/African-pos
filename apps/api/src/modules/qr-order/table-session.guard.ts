@@ -3,6 +3,12 @@ import type { Request } from 'express'
 
 import { verifyTableSessionToken, type TableSessionClaims } from './table-session.js'
 
+declare module 'express-serve-static-core' {
+  interface Request {
+    tableSession?: TableSessionClaims
+  }
+}
+
 @Injectable()
 export class TableSessionGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {

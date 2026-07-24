@@ -1,7 +1,11 @@
 import { Module } from '@nestjs/common'
 
 import { AuditModule } from '../../core/audit/audit.module.js'
+import { CrmModule } from '../crm/index.js'
+import { NotificationsModule } from '../notifications/index.js'
+import { OrdersModule } from '../orders/orders.module.js'
 import { PaymentsModule } from '../payments/index.js'
+import { RestaurantModule } from '../restaurant/restaurant.module.js'
 import { QrOrderController } from './qr-order.controller.js'
 import { QrOrderService } from './qr-order.service.js'
 
@@ -12,7 +16,7 @@ export const qrOrderModule = {
 } as const
 
 @Module({
-  imports: [AuditModule, PaymentsModule],
+  imports: [AuditModule, PaymentsModule, RestaurantModule, OrdersModule, CrmModule, NotificationsModule],
   controllers: [QrOrderController],
   providers: [QrOrderService],
 })

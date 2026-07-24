@@ -1,19 +1,28 @@
-import { Inject, Injectable } from '@nestjs/common'
+import { BadRequestException, Inject, Injectable } from '@nestjs/common'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
   cashDrawerSessions,
+  dailyLocationMetrics,
   inventoryItems,
+  kitchenTickets,
+  locations,
   orderDiscounts,
   orderItems,
   orders,
+  organizations,
   payments,
+  productSalesMetrics,
+  products,
   refunds,
+  reportSnapshots,
   staff,
+  staffPerformanceMetrics,
   shifts,
   stockLevels,
   stockMovements,
+  tenantSettings,
   tips,
   customers,
   customerFeedback,
@@ -296,6 +305,83 @@ export class ReportsService {
     })
   }
 
+  // ---------------------------------------------------------------------------
+  // P14 — Role-specific dashboards
+  // ---------------------------------------------------------------------------
+  async ownerDashboard(authContext: AuthContext) {
+    const [orgSummary, benchmark] = await Promise.all([
+      withTenantContext(this.pool, authContext.organizationId, async (db) => {
+        const since = sql`DATE_TRUNC('month', CURRENT_DATE)`
+        const [orgLocations, revenueByLocation] = await Promise.all([
+          db
+            .select({ id: locations.id, name: locations.name })
+            .from(locations)
+            .where(eq(locations.organizationId, authContext.organizationId)),
+          db
+            .select({
+              locationId: bills.locationId,
+              revenue: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)`,
+              orderCount: sql<number>`COUNT(*)`,
+            })
+            .from(bills)
+            .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.status, 'paid'), sql`${bills.paidAt} >= ${since}`))
+            .groupBy(bills.locationId),
+        ])
+        const revenueByLocationId = new Map(revenueByLocation.map((r) => [r.locationId, r]))
+        const locationBreakdown = orgLocations.map((loc) => ({
+          locationId: loc.id,
+          locationName: loc.name,
+          monthRevenue: Number(revenueByLocationId.get(loc.id)?.revenue ?? 0),
+          orderCount: Number(revenueByLocationId.get(loc.id)?.orderCount ?? 0),
+        }))
+        return {
+          locationCount: orgLocations.length,
+          totalMonthRevenue: locationBreakdown.reduce((sum, l) => sum + l.monthRevenue, 0),
+          locationBreakdown,
+        }
+      }),
+      this.getPeerBenchmark(authContext, 'revenue'),
+    ])
+    return { ...orgSummary, benchmark }
+  }
+
+  async managerDashboard(authContext: AuthContext, locationId: string) {
+    const [today, staffToday, inventory] = await Promise.all([
+      this.homeDashboard(authContext, locationId),
+      this.staffDashboard(authContext, locationId, 1),
+      this.inventoryDashboard(authContext, locationId),
+    ])
+    return { today, staffToday, inventory }
+  }
+
+  async kitchenDashboard(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const today = sql`CURRENT_DATE`
+      const [openByStatus, completedToday] = await Promise.all([
+        db
+          .select({ status: kitchenTickets.status, count: sql<number>`COUNT(*)` })
+          .from(kitchenTickets)
+          .where(and(eq(kitchenTickets.organizationId, authContext.organizationId), eq(kitchenTickets.locationId, locationId), sql`${kitchenTickets.status} IN ('open', 'partially_ready')`))
+          .groupBy(kitchenTickets.status),
+        db
+          .select({
+            avgPrepSeconds: sql<number>`COALESCE(ROUND(AVG(EXTRACT(EPOCH FROM (${kitchenTickets.readyAt} - ${kitchenTickets.createdAt})))), 0)`,
+            ticketsCompleted: sql<number>`COUNT(*)`,
+            rushCount: sql<number>`COUNT(*) FILTER (WHERE ${kitchenTickets.isRush} = true)`,
+          })
+          .from(kitchenTickets)
+          .where(and(eq(kitchenTickets.organizationId, authContext.organizationId), eq(kitchenTickets.locationId, locationId), eq(kitchenTickets.status, 'ready'), sql`DATE(${kitchenTickets.readyAt}) = ${today}`)),
+      ])
+      const stats = completedToday[0]
+      return {
+        openTicketsByStatus: openByStatus.map((r) => ({ status: r.status, count: Number(r.count) })),
+        avgPrepSeconds: Number(stats?.avgPrepSeconds ?? 0),
+        ticketsCompletedToday: Number(stats?.ticketsCompleted ?? 0),
+        rushOrdersToday: Number(stats?.rushCount ?? 0),
+      }
+    })
+  }
+
   async paymentsReport(authContext: AuthContext, locationId: string, days = 7) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const since = sql`CURRENT_DATE - (${days} - 1) * INTERVAL '1 day'`
@@ -353,5 +439,212 @@ export class ReportsService {
       default:
         return { csv: `report_type,exported,true\n${type},not_supported\n`, filename: `report.csv` }
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // P14 — Real-time P&L
+  // ---------------------------------------------------------------------------
+  async getRealtimePnL(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const today = sql`CURRENT_DATE`
+      const [revenueResult, activeStaff, foodCostResult, hourlyRateSetting] = await Promise.all([
+        db
+          .select({ revenue: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)` })
+          .from(bills)
+          .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'paid'), sql`DATE(${bills.paidAt}) = ${today}`)),
+        db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(staff)
+          .where(and(eq(staff.organizationId, authContext.organizationId), eq(staff.locationId, locationId), eq(staff.status, 'active'))),
+        db
+          .select({ total: sql<number>`COALESCE(SUM(${stockMovements.unitCost} * ${stockMovements.quantity}), 0)` })
+          .from(stockMovements)
+          .where(and(eq(stockMovements.organizationId, authContext.organizationId), eq(stockMovements.locationId, locationId), eq(stockMovements.movementType, 'recipe_deduction'), sql`DATE(${stockMovements.movedAt}) = ${today}`)),
+        db
+          .select({ value: tenantSettings.value })
+          .from(tenantSettings)
+          .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'hourly_labor_rate')))
+          .limit(1)
+          .then((r) => r[0]),
+      ])
+      const revenue = Number(revenueResult[0]?.revenue ?? 0)
+      const staffCount = Number(activeStaff[0]?.count ?? 0)
+      const hourlyRate = (hourlyRateSetting?.value as { amount?: number })?.amount ?? 500
+      const hoursPerShift = 8
+      const laborCost = staffCount * hoursPerShift * hourlyRate
+      const foodCost = Number(foodCostResult[0]?.total ?? 0)
+      return {
+        revenue,
+        laborCost,
+        foodCost,
+        grossProfit: revenue - laborCost - foodCost,
+        asOf: new Date(),
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // P14 — Competitive benchmarking
+  // ---------------------------------------------------------------------------
+  async getPeerBenchmark(authContext: AuthContext, metric: string) {
+    const orgCount = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(organizations)
+      return Number(rows[0]?.count ?? 0)
+    })
+    if (orgCount < 10) {
+      return { available: false, minimumRequired: 10, currentCount: orgCount }
+    }
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const metricColumn = metric === 'revenue' ? dailyLocationMetrics.revenue
+        : metric === 'avgTicket' ? dailyLocationMetrics.avgTicket
+        : metric === 'laborCost' ? dailyLocationMetrics.laborCost
+        : metric === 'foodCost' ? dailyLocationMetrics.foodCost
+        : dailyLocationMetrics.grossProfit
+      const today = sql`CURRENT_DATE`
+      const allMetrics = await db
+        .select({ organizationId: dailyLocationMetrics.organizationId, value: metricColumn })
+        .from(dailyLocationMetrics)
+        .where(sql`${dailyLocationMetrics.date} = ${today}`)
+      const sorted = allMetrics.sort((a, b) => Number(a.value) - Number(b.value))
+      const current = allMetrics.find((m) => m.organizationId === authContext.organizationId)
+      const currentValue = Number(current?.value ?? 0)
+      const rank = sorted.findIndex((m) => m.organizationId === authContext.organizationId)
+      const percentile = sorted.length > 0 ? Math.round((rank / sorted.length) * 100) : 0
+      return { available: true, currentValue, percentile, totalPeers: sorted.length }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // P14 — Scheduled reports
+  // ---------------------------------------------------------------------------
+  async getScheduledReports(authContext: AuthContext) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const rows = await db
+        .select()
+        .from(tenantSettings)
+        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), sql`${tenantSettings.key} LIKE 'report_schedule_%'`))
+      return rows.map((r) => ({
+        reportType: r.key.replace('report_schedule_', ''),
+        cadence: (r.value as { cadence?: string })?.cadence ?? 'daily',
+        updatedAt: r.updatedAt,
+      }))
+    })
+  }
+
+  async scheduleReport(authContext: AuthContext, reportType: string, cadence: string) {
+    if (!['daily', 'weekly', 'monthly'].includes(cadence)) {
+      throw new BadRequestException('cadence must be one of: daily, weekly, monthly')
+    }
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const existing = await db
+        .select()
+        .from(tenantSettings)
+        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, `report_schedule_${reportType}`), sql`${tenantSettings.locationId} is null`))
+        .limit(1)
+        .then((r) => r[0])
+      if (existing) {
+        const [updated] = await db
+          .update(tenantSettings)
+          .set({ value: { cadence }, updatedAt: sql`now()` })
+          .where(eq(tenantSettings.id, existing.id))
+          .returning()
+        return { reportType, cadence, updatedAt: updated?.updatedAt ?? new Date() }
+      }
+      const [setting] = await db
+        .insert(tenantSettings)
+        .values({
+          organizationId: authContext.organizationId,
+          key: `report_schedule_${reportType}`,
+          value: { cadence },
+        })
+        .returning()
+      return { reportType, cadence, updatedAt: setting?.updatedAt ?? new Date() }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // P14 — Daily aggregation (rebuilds daily_location_metrics from the ledger)
+  // ---------------------------------------------------------------------------
+  async runDailyAggregation(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const today = sql`CURRENT_DATE`
+      const [revenueRow, orderCountRow, voidRow, discountRow, staffCountRow, foodCostRow, hourlyRateSetting] =
+        await Promise.all([
+          db
+            .select({ total: sql<number>`COALESCE(SUM(${bills.totalAmount}), 0)` })
+            .from(bills)
+            .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'paid'), sql`DATE(${bills.paidAt}) = ${today}`)),
+          db
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(orders)
+            .where(and(eq(orders.organizationId, authContext.organizationId), eq(orders.locationId, locationId), sql`${orders.status} NOT IN ('draft', 'cancelled')`, sql`DATE(${orders.createdAt}) = ${today}`)),
+          db
+            .select({ count: sql<number>`COUNT(*)`, amount: sql<number>`COALESCE(SUM(${orderItems.totalAmount}), 0)` })
+            .from(orderItems)
+            .where(and(eq(orderItems.organizationId, authContext.organizationId), sql`${orderItems.status} IN ('voided', 'comped')`, sql`DATE(${orderItems.createdAt}) = ${today}`)),
+          db
+            .select({ count: sql<number>`COUNT(*)`, amount: sql<number>`COALESCE(SUM(${orderDiscounts.amountApplied}), 0)` })
+            .from(orderDiscounts)
+            .where(and(eq(orderDiscounts.organizationId, authContext.organizationId), eq(orderDiscounts.locationId, locationId), sql`DATE(${orderDiscounts.createdAt}) = ${today}`)),
+          db
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(staff)
+            .where(and(eq(staff.organizationId, authContext.organizationId), eq(staff.locationId, locationId), eq(staff.status, 'active'))),
+          db
+            .select({ total: sql<number>`COALESCE(SUM(${stockMovements.unitCost} * ${stockMovements.quantity}), 0)` })
+            .from(stockMovements)
+            .where(and(eq(stockMovements.organizationId, authContext.organizationId), eq(stockMovements.locationId, locationId), eq(stockMovements.movementType, 'recipe_deduction'), sql`DATE(${stockMovements.movedAt}) = ${today}`)),
+          db
+            .select({ value: tenantSettings.value })
+            .from(tenantSettings)
+            .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'hourly_labor_rate')))
+            .limit(1)
+            .then((r) => r[0]),
+        ])
+
+      const revenue = Number(revenueRow[0]?.total ?? 0)
+      const orderCount = Number(orderCountRow[0]?.count ?? 0)
+      const totalVoids = Number(voidRow[0]?.count ?? 0)
+      const voidAmount = Number(voidRow[0]?.amount ?? 0)
+      const totalDiscounts = Number(discountRow[0]?.count ?? 0)
+      const discountAmount = Number(discountRow[0]?.amount ?? 0)
+      const staffCount = Number(staffCountRow[0]?.count ?? 0)
+      const hourlyRate = (hourlyRateSetting?.value as { amount?: number })?.amount ?? 500
+      const laborCost = staffCount * 8 * hourlyRate
+      const foodCost = Number(foodCostRow[0]?.total ?? 0)
+      const avgTicket = orderCount > 0 ? Math.round(revenue / orderCount) : 0
+      const grossProfit = revenue - laborCost - foodCost
+
+      const metricsValues = {
+        revenue,
+        orderCount,
+        avgTicket,
+        totalVoids,
+        voidAmount,
+        totalDiscounts,
+        discountAmount,
+        laborCost,
+        foodCost,
+        grossProfit,
+      }
+
+      const [metrics] = await db
+        .insert(dailyLocationMetrics)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId,
+          date: sql`CURRENT_DATE`,
+          ...metricsValues,
+        })
+        .onConflictDoUpdate({
+          target: [dailyLocationMetrics.organizationId, dailyLocationMetrics.locationId, dailyLocationMetrics.date],
+          set: { ...metricsValues, updatedAt: sql`now()` },
+        })
+        .returning()
+
+      return metrics
+    })
   }
 }

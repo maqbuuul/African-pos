@@ -1,5 +1,4 @@
 import {
-  Body,
   Controller,
   Get,
   Inject,
@@ -16,7 +15,9 @@ import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
 import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { ValidatedBody } from '../../core/validation/validated-body.decorator.js'
 import { PushOperationsDto } from './dto/push-operations.dto.js'
+import { QueueEtimsDto } from './dto/queue-etims.dto.js'
 import { ResolveConflictDto } from './dto/resolve-conflict.dto.js'
+import { UpdateDeviceStatusDto } from './dto/update-device-status.dto.js'
 import { SyncService } from './sync.service.js'
 
 @Controller('api/v1/sync')
@@ -41,6 +42,15 @@ export class SyncController {
     return this.syncService.getDeviceHealth(req.authContext!, deviceId)
   }
 
+  @Get('device-sync-health/:deviceId')
+  @RequirePermission('sync:view_device_health')
+  getDeviceSyncHealth(
+    @Req() req: Request,
+    @Param('deviceId') deviceId: string,
+  ) {
+    return this.syncService.getDeviceSyncHealth(req.authContext!, deviceId)
+  }
+
   @Get('conflicts')
   @RequirePermission('sync:view_conflicts')
   listConflicts(
@@ -60,10 +70,19 @@ export class SyncController {
     return this.syncService.resolveConflict(req.authContext!, { ...dto, conflictId: id })
   }
 
+  @Post('queue-etims')
+  @RequirePermission('sync:push')
+  queueEtims(
+    @Req() req: Request,
+    @ValidatedBody(QueueEtimsDto) body: QueueEtimsDto,
+  ) {
+    return this.syncService.queueOfflineETimsSubmission(req.authContext!, body.receiptId, body.billId)
+  }
+
   @Post('device-status')
   updateDeviceStatus(
     @Req() req: Request,
-    @Body() body: { deviceId: string; status: string; batteryLevel?: number; onBattery?: boolean },
+    @ValidatedBody(UpdateDeviceStatusDto) body: UpdateDeviceStatusDto,
   ) {
     return this.syncService.updateDeviceStatus(
       req.authContext!,

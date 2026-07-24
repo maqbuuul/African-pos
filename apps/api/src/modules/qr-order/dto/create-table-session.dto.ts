@@ -1,7 +1,7 @@
-import { IsString, MinLength } from 'class-validator'
+import { IsString, Length } from 'class-validator'
 
 export class CreateTableSessionDto {
   @IsString()
-  @MinLength(1)
+  @Length(1, 100)
   qrSlug!: string
 }

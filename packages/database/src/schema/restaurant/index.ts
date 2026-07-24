@@ -11,6 +11,7 @@ import {
   EntityStatusSchema,
   GiftCardStatusSchema,
   InventoryItemTypeSchema,
+  KdsStationTypeSchema,
   KdsTicketItemStatusSchema,
   KdsTicketStatusSchema,
   LoyaltyEventTypeSchema,
@@ -143,6 +144,10 @@ export const products = pgTable('products', {
   // A scheduled job (P3 follow-up, not this phase) flips is_available back to
   // true once this passes; null means manual-restore only.
   autoRestoreAt: timestamp('auto_restore_at', { withTimezone: true }),
+  // Optional surcharge percentage for card payments (dual pricing / cash-card
+  // surcharging per BUILD_WORKFLOW.md P7). When set, card payments compute
+  // surcharge = round(priceAmount * cardSurchargePct / 100) per unit.
+  cardSurchargePct: integer('card_surcharge_pct'),
   sortOrder: integer('sort_order').notNull().default(0),
   ...timestamps,
 }, (table) => [
@@ -153,7 +158,6 @@ export const products = pgTable('products', {
   check('products_currency_len_check', sql`char_length(${table.currency}) = 3`),
   check('products_status_check', enumCheck(table.status, ProductStatusSchema.options)),
 ])
-
 // Append-only price history (never overwritten — ENGINEERING_CHARTER.md
 // versioning rule). Exactly one row per product has `effectiveTo IS NULL`
 // (the currently active price), enforced by the partial unique index below,
@@ -423,6 +427,9 @@ export const orderItems = pgTable('order_items', {
   // inline, not a separate step").
   seatNumber: integer('seat_number'),
   course: text('course'),
+  // Multi-phone shared basket (P10): tags each item with the QR session that
+  // added it, enabling per-seat bill-splitting without separate seat numbers.
+  sessionLabel: text('session_label'),
   kitchenNote: text('kitchen_note'),
   quantity: integer('quantity').notNull().default(1),
   unitPriceAmount: integer('unit_price_amount').notNull(),
@@ -608,6 +615,7 @@ export const kdsStations = pgTable('kds_stations', {
   description: text('description'),
   assignedStaffId: uuid('assigned_staff_id').references(() => staff.id, { onDelete: 'set null' }),
   isExpo: boolean('is_expo').notNull().default(false),
+  stationType: text('station_type').notNull().default('kitchen'),
   expectedPrepTimeSeconds: integer('expected_prep_time_seconds').notNull().default(900),
   recallGraceSeconds: integer('recall_grace_seconds').notNull().default(120),
   sortOrder: integer('sort_order').notNull().default(0),
@@ -618,6 +626,7 @@ export const kdsStations = pgTable('kds_stations', {
   index('kds_stations_location_id_idx').on(table.locationId),
   index('kds_stations_assigned_staff_id_idx').on(table.assignedStaffId),
   uniqueIndex('kds_stations_location_id_code_key').on(table.locationId, table.code),
+  check('kds_stations_station_type_check', enumCheck(table.stationType, KdsStationTypeSchema.options)),
   check('kds_stations_expected_prep_time_seconds_check', sql`${table.expectedPrepTimeSeconds} > 0`),
   check('kds_stations_recall_grace_seconds_check', sql`${table.recallGraceSeconds} >= 0`),
   check('kds_stations_status_check', enumCheck(table.status, EntityStatusSchema.options)),
@@ -638,6 +647,8 @@ export const kitchenTickets = pgTable('kitchen_tickets', {
     .notNull()
     .references(() => orders.id, { onDelete: 'restrict' }),
   tableId: uuid('table_id').references(() => restaurantTables.id, { onDelete: 'restrict' }),
+  isRush: boolean('is_rush').notNull().default(false),
+  isVip: boolean('is_vip').notNull().default(false),
   status: text('status').notNull().default('open'),
   firedByActorId: uuid('fired_by_actor_id').notNull(),
   readyAt: timestamp('ready_at', { withTimezone: true }),
@@ -677,6 +688,7 @@ export const kitchenTicketItems = pgTable('kitchen_ticket_items', {
   seatNumber: integer('seat_number'),
   course: text('course'),
   kitchenNote: text('kitchen_note'),
+  pourCost: integer('pour_cost').notNull().default(0),
   status: text('status').notNull().default('queued'),
   startedAt: timestamp('started_at', { withTimezone: true }),
   readyAt: timestamp('ready_at', { withTimezone: true }),
@@ -695,6 +707,32 @@ export const kitchenTicketItems = pgTable('kitchen_ticket_items', {
   index('kitchen_ticket_items_status_idx').on(table.status),
   check('kitchen_ticket_items_quantity_check', sql`${table.quantity} > 0`),
   check('kitchen_ticket_items_status_check', enumCheck(table.status, KdsTicketItemStatusSchema.options)),
+])
+
+export const cookTimeSamples = pgTable('cook_time_samples', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  locationId: uuid('location_id')
+    .notNull()
+    .references(() => locations.id, { onDelete: 'restrict' }),
+  stationId: uuid('station_id')
+    .notNull()
+    .references(() => kdsStations.id, { onDelete: 'restrict' }),
+  productId: uuid('product_id')
+    .notNull()
+    .references(() => products.id, { onDelete: 'restrict' }),
+  prepSeconds: integer('prep_seconds').notNull(),
+  observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('cook_time_samples_organization_id_idx').on(table.organizationId),
+  index('cook_time_samples_location_id_idx').on(table.locationId),
+  index('cook_time_samples_station_id_idx').on(table.stationId),
+  index('cook_time_samples_product_id_idx').on(table.productId),
+  index('cook_time_samples_observed_at_idx').on(table.observedAt),
+  check('cook_time_samples_prep_seconds_check', sql`${table.prepSeconds} > 0`),
 ])
 
 // ---------------------------------------------------------------------------
@@ -733,6 +771,12 @@ export const paymentIntents = pgTable('payment_intents', {
   checkoutUrl: text('checkout_url'),
   customerPhone: text('customer_phone'),
   customerEmail: text('customer_email'),
+  // Bar-tab pre-authorization grouping key (BUILD_WORKFLOW.md P7).
+  tabId: text('tab_id'),
+  // Signed JWT token for split-check WhatsApp payment links (P7).
+  paymentLinkToken: text('payment_link_token'),
+  // Surcharge amount for card payments (dual pricing, P7).
+  surchargeAmount: integer('surcharge_amount'),
   // When this intent expires (M-Pesa: 5 min, Paystack: 1 hour).
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   metadata: jsonb('metadata'),
@@ -783,6 +827,8 @@ export const payments = pgTable('payments', {
   // Cash-only: amount handed over by customer minus bill total.
   changeGivenAmount: integer('change_given_amount').notNull().default(0),
   idempotencyKey: text('idempotency_key').notNull(),
+  surchargeAmount: integer('surcharge_amount'),
+  fraudAlert: boolean('fraud_alert').notNull().default(false),
   paidAt: timestamp('paid_at', { withTimezone: true }).notNull().defaultNow(),
   reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
   processedByActorId: uuid('processed_by_actor_id'),
@@ -1120,6 +1166,7 @@ export const customers = pgTable('customers', {
   lastName: text('last_name'),
   notes: text('notes'),
   allergyNotes: text('allergy_notes'),
+  creditRisk: boolean('credit_risk').notNull().default(false),
   status: text('status').notNull().default('active'),
   ...timestamps,
 }, (table) => [
@@ -1455,6 +1502,9 @@ export const purchaseOrders = pgTable('purchase_orders', {
 
 export const purchaseOrderItems = pgTable('purchase_order_items', {
   ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
   purchaseOrderId: uuid('purchase_order_id')
     .notNull()
     .references(() => purchaseOrders.id, { onDelete: 'cascade' }),
@@ -1468,6 +1518,7 @@ export const purchaseOrderItems = pgTable('purchase_order_items', {
   actualUnitCost: integer('actual_unit_cost'),
   ...timestamps,
 }, (table) => [
+  index('purchase_order_items_organization_id_idx').on(table.organizationId),
   index('purchase_order_items_po_id_idx').on(table.purchaseOrderId),
   index('purchase_order_items_item_id_idx').on(table.inventoryItemId),
 ])
@@ -1572,6 +1623,9 @@ export const recipes = pgTable('recipes', {
 
 export const recipeIngredients = pgTable('recipe_ingredients', {
   ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
   recipeId: uuid('recipe_id')
     .notNull()
     .references(() => recipes.id, { onDelete: 'cascade' }),
@@ -1583,6 +1637,7 @@ export const recipeIngredients = pgTable('recipe_ingredients', {
   notes: text('notes'),
   ...timestamps,
 }, (table) => [
+  index('recipe_ingredients_organization_id_idx').on(table.organizationId),
   index('recipe_ingredients_recipe_id_idx').on(table.recipeId),
   index('recipe_ingredients_item_id_idx').on(table.inventoryItemId),
 ])
@@ -1767,6 +1822,7 @@ export const restaurantTenantScopedTables = [
   recipeIngredients,
   wastageEvents,
   staffNotifications,
+  cookTimeSamples,
   syncOperations,
   syncCursors,
   syncConflicts,

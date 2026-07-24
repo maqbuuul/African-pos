@@ -1,35 +1,40 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, inArray, ne } from 'drizzle-orm'
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common'
+import { and, asc, desc, eq, inArray, ne } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
+  cookTimeSamples,
   kitchenTicketItems,
   kitchenTickets,
   kdsStations,
-  menuCategories,
-  orderDiscounts,
   orderItems,
   orders,
-  products,
   restaurantTables,
-  staff,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
 import {
   KDS_TICKET_ITEM_STATUS_TRANSITIONS,
+  KdsStationTypeSchema,
   ORDER_ITEM_STATUS_TRANSITIONS,
-  ORDER_STATUS_TRANSITIONS,
-  TABLE_STATE_TRANSITIONS,
+  type KdsStationType,
   type KdsTicketItemStatus,
   type OrderItemStatus,
-  type OrderStatus,
-  type TableStatus,
 } from '@hospitality-os/domain'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
+import { StaffService } from '../../core/staff/staff.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
+import { CategoriesService } from '../products/categories.service.js'
+import { ProductsService } from '../products/products.service.js'
+// Genuine module cycle: OrdersModule already imports RestaurantModule (for
+// KdsService/TablesService); kitchen-initiated actions here need to write
+// orders/order_items (orders-owned) back, so this edge points the other
+// way too — resolved with forwardRef on both sides (module imports in
+// restaurant.module.ts/orders.module.ts, and this injection).
+import { OrdersService } from '../orders/orders.service.js'
 import type { CreateKdsStationDto } from './dto/create-kds-station.dto.js'
 import type { UpdateKdsStationDto } from './dto/update-kds-station.dto.js'
 
@@ -55,6 +60,11 @@ export class KdsService {
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
+    @Inject(ProductsService) private readonly productsService: ProductsService,
+    @Inject(CategoriesService) private readonly categoriesService: CategoriesService,
+    @Inject(StaffService) private readonly staffService: StaffService,
+    @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
+    @Inject(forwardRef(() => OrdersService)) private readonly ordersService: OrdersService,
   ) {}
 
   async listStations(authContext: AuthContext, locationId?: string) {
@@ -82,6 +92,7 @@ export class KdsService {
           description: dto.description ?? null,
           assignedStaffId: dto.assignedStaffId ?? null,
           isExpo: dto.isExpo ?? false,
+          stationType: dto.stationType ?? 'kitchen',
           expectedPrepTimeSeconds: dto.expectedPrepTimeSeconds ?? 900,
           recallGraceSeconds: dto.recallGraceSeconds ?? 120,
           sortOrder: dto.sortOrder ?? 0,
@@ -121,6 +132,7 @@ export class KdsService {
           ...(dto.description !== undefined && { description: dto.description }),
           ...(dto.assignedStaffId !== undefined && { assignedStaffId: dto.assignedStaffId }),
           ...(dto.isExpo !== undefined && { isExpo: dto.isExpo }),
+          ...(dto.stationType !== undefined && { stationType: dto.stationType }),
           ...(dto.expectedPrepTimeSeconds !== undefined && { expectedPrepTimeSeconds: dto.expectedPrepTimeSeconds }),
           ...(dto.recallGraceSeconds !== undefined && { recallGraceSeconds: dto.recallGraceSeconds }),
           ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
@@ -337,9 +349,9 @@ export class KdsService {
       const refreshedItems = await db.select().from(kitchenTicketItems).where(eq(kitchenTicketItems.ticketId, ticketId))
       const orderItemIds = [...new Set(refreshedItems.map((item) => item.orderItemId))]
       for (const orderItemId of orderItemIds) {
-        await this.syncOrderItemFromKitchen(db, orderItemId)
+        await this.syncOrderItemFromKitchen(db, authContext.organizationId, orderItemId)
       }
-      await this.refreshTicketOrderAndTableState(db, ticketId, ticket.orderId)
+      await this.refreshTicketOrderAndTableState(db, authContext.organizationId, ticketId, ticket.orderId)
       return { ticket, readyCount: items.length }
     })
 
@@ -387,8 +399,8 @@ export class KdsService {
         .returning()
       if (!updated) throw new Error('failed to recall kitchen ticket item')
 
-      await this.syncOrderItemFromKitchen(db, updated.orderItemId)
-      await this.refreshTicketOrderAndTableState(db, updated.ticketId, updated.orderId)
+      await this.syncOrderItemFromKitchen(db, authContext.organizationId, updated.orderItemId)
+      await this.refreshTicketOrderAndTableState(db, authContext.organizationId, updated.ticketId, updated.orderId)
       return updated
     })
 
@@ -423,9 +435,8 @@ export class KdsService {
         .returning()
       if (!updated) throw new Error('failed to acknowledge kitchen void')
 
-      const syncedOrderItem = await this.syncOrderItemFromKitchen(db, updated.orderItemId, authContext.actorId)
-      await this.recomputeOrderTotals(db, authContext.organizationId, updated.orderId)
-      await this.refreshTicketOrderAndTableState(db, updated.ticketId, updated.orderId)
+      const syncedOrderItem = await this.syncOrderItemFromKitchen(db, authContext.organizationId, updated.orderItemId, authContext.actorId)
+      await this.refreshTicketOrderAndTableState(db, authContext.organizationId, updated.ticketId, updated.orderId)
       return { updated, syncedOrderItem }
     })
 
@@ -514,10 +525,10 @@ export class KdsService {
     if (firedItems.length === 0) return []
 
     const productIds = [...new Set(firedItems.map((item) => item.productId))]
-    const productRows = await db.select().from(products).where(inArray(products.id, productIds))
+    const productRows = await this.productsService.getProductsByIds(db, authContext.organizationId, productIds)
     const productById = new Map(productRows.map((row) => [row.id, row]))
     const categoryIds = [...new Set(productRows.map((product) => product.categoryId))]
-    const categoryRows = categoryIds.length ? await db.select().from(menuCategories).where(inArray(menuCategories.id, categoryIds)) : []
+    const categoryRows = await this.categoriesService.getCategoriesByIds(db, authContext.organizationId, categoryIds)
     const categoryById = new Map(categoryRows.map((row) => [row.id, row]))
     const stations = await db
       .select()
@@ -614,18 +625,13 @@ export class KdsService {
       .set({ status: 'void_requested', voidRequestedAt: new Date(), voidReason: reason })
       .where(and(eq(kitchenTicketItems.organizationId, authContext.organizationId), eq(kitchenTicketItems.orderItemId, item.id), ne(kitchenTicketItems.status, 'voided')))
 
-    const [updated] = await db
-      .update(orderItems)
-      .set({ status: 'void_requested', voidReason: reason })
-      .where(eq(orderItems.id, item.id))
-      .returning()
-    if (!updated) throw new Error('failed to mark order item void_requested')
+    const updated = await this.ordersService.syncItemStatusFromKitchen(db, authContext.organizationId, item.id, 'void_requested', undefined, reason)
 
     const ticketIds = [...new Set(ticketItemRows.map((row) => row.ticketId))]
     for (const ticketId of ticketIds) {
       await this.recomputeTicketStatus(db, ticketId)
     }
-    await this.recomputeOrderReadiness(db, item.orderId)
+    await this.ordersService.recomputeReadinessAndTotals(db, authContext.organizationId, item.orderId)
     return updated
   }
 
@@ -656,8 +662,11 @@ export class KdsService {
         .returning()
       if (!updated) throw new Error('failed to update kitchen ticket item')
 
-      await this.syncOrderItemFromKitchen(db, updated.orderItemId)
-      await this.refreshTicketOrderAndTableState(db, updated.ticketId, updated.orderId)
+      await this.syncOrderItemFromKitchen(db, authContext.organizationId, updated.orderItemId)
+      await this.refreshTicketOrderAndTableState(db, authContext.organizationId, updated.ticketId, updated.orderId)
+      if (targetStatus === 'in_progress') {
+        await this.checkAndCreateDelayAlert(db, authContext, updated.stationId, updated.id)
+      }
       return updated
     })
 
@@ -674,9 +683,9 @@ export class KdsService {
     return this.serializeTicketItem(result)
   }
 
-  private async refreshTicketOrderAndTableState(db: Db, ticketId: string, orderId: string) {
+  private async refreshTicketOrderAndTableState(db: Db, organizationId: string, ticketId: string, orderId: string) {
     await this.recomputeTicketStatus(db, ticketId)
-    await this.recomputeOrderReadiness(db, orderId)
+    await this.ordersService.recomputeReadinessAndTotals(db, organizationId, orderId)
   }
 
   private async recomputeTicketStatus(db: Db, ticketId: string) {
@@ -699,7 +708,12 @@ export class KdsService {
       .where(eq(kitchenTickets.id, ticketId))
   }
 
-  private async syncOrderItemFromKitchen(db: Db, orderItemId: string, resolvedByActorId?: string) {
+  // Kitchen-ticket-item states are native here; the resulting order_item
+  // status write is orders-owned, so it's delegated to OrdersService (see
+  // orders.service.ts's syncItemStatusFromKitchen) — same tx-join
+  // convention this file's own createTicketsForSentItems/
+  // requestVoidForOrderItem already use in the other direction.
+  private async syncOrderItemFromKitchen(db: Db, organizationId: string, orderItemId: string, resolvedByActorId?: string) {
     const orderItem = await this.loadOrderItem(db, null, orderItemId)
     if (orderItem.status === 'comped' || orderItem.status === 'served') return orderItem
 
@@ -718,63 +732,7 @@ export class KdsService {
               ? 'accepted'
               : 'sent'
 
-    if (orderItem.status === nextStatus) return orderItem
-    this.assertLegalOrderItemTransition(orderItem.status as OrderItemStatus, nextStatus)
-
-    const patch: Partial<OrderItemRow> = { status: nextStatus }
-    if (nextStatus === 'voided' && resolvedByActorId) patch.resolvedByActorId = resolvedByActorId
-    const [updated] = await db.update(orderItems).set(patch).where(eq(orderItems.id, orderItemId)).returning()
-    if (!updated) throw new Error('failed to sync order item from kitchen state')
-    return updated
-  }
-
-  private async recomputeOrderReadiness(db: Db, orderId: string) {
-    const [order] = await db.select().from(orders).where(eq(orders.id, orderId))
-    if (!order) throw new NotFoundException('order not found')
-    if (!['sent_to_kitchen', 'partially_ready', 'ready', 'served'].includes(order.status)) return order
-
-    const items = await db
-      .select()
-      .from(orderItems)
-      .where(and(eq(orderItems.orderId, orderId), ne(orderItems.status, 'voided'), ne(orderItems.status, 'comped')))
-    if (items.length === 0) return order
-
-    const nextStatus: OrderStatus = items.every((item) => item.status === 'served')
-      ? 'served'
-      : items.every((item) => ['ready', 'served'].includes(item.status))
-        ? 'ready'
-        : items.some((item) => ['ready', 'served'].includes(item.status))
-          ? 'partially_ready'
-          : 'sent_to_kitchen'
-
-    if (nextStatus !== order.status && ORDER_STATUS_TRANSITIONS[order.status as OrderStatus]?.includes(nextStatus)) {
-      const [updatedOrder] = await db.update(orders).set({ status: nextStatus }).where(eq(orders.id, orderId)).returning()
-      if (updatedOrder && nextStatus === 'ready' && updatedOrder.tableId) {
-        const [table] = await db.select().from(restaurantTables).where(eq(restaurantTables.id, updatedOrder.tableId))
-        if (table && TABLE_STATE_TRANSITIONS[table.status as TableStatus]?.includes('food_ready')) {
-          await db.update(restaurantTables).set({ status: 'food_ready' }).where(eq(restaurantTables.id, table.id))
-        }
-      }
-      return updatedOrder ?? order
-    }
-
-    return order
-  }
-
-  private async recomputeOrderTotals(db: Db, organizationId: string, orderId: string) {
-    const items = await db
-      .select()
-      .from(orderItems)
-      .where(and(eq(orderItems.orderId, orderId), eq(orderItems.organizationId, organizationId), ne(orderItems.status, 'voided')))
-    const subtotalAmount = items.reduce((sum, item) => sum + item.totalAmount, 0)
-    const itemDiscounts = items.reduce((sum, item) => sum + item.discountAmount, 0)
-    const orderLevelDiscounts = await db
-      .select()
-      .from(orderDiscounts)
-      .where(and(eq(orderDiscounts.orderId, orderId), eq(orderDiscounts.organizationId, organizationId)))
-    const discountAmount = itemDiscounts + orderLevelDiscounts.filter((row) => !row.orderItemId).reduce((sum, row) => sum + row.amountApplied, 0)
-    const totalAmount = subtotalAmount - discountAmount
-    await db.update(orders).set({ subtotalAmount, discountAmount, totalAmount }).where(eq(orders.id, orderId))
+    return this.ordersService.syncItemStatusFromKitchen(db, organizationId, orderItemId, nextStatus, resolvedByActorId)
   }
 
   private buildStationBatches(items: KitchenTicketItemRow[]) {
@@ -891,12 +849,7 @@ export class KdsService {
   }
 
   private async loadAssignableStaff(db: Db, organizationId: string, locationId: string, staffId: string) {
-    const [row] = await db
-      .select()
-      .from(staff)
-      .where(and(eq(staff.id, staffId), eq(staff.organizationId, organizationId), eq(staff.locationId, locationId)))
-    if (!row) throw new NotFoundException('assigned staff member not found at this location')
-    return row
+    return this.staffService.getActiveMember(db, organizationId, locationId, staffId)
   }
 
   private async loadTicket(db: Db, organizationId: string, ticketId: string) {
@@ -923,5 +876,273 @@ export class KdsService {
     const [row] = await db.select().from(orderItems).where(and(...conditions))
     if (!row) throw new NotFoundException('order item not found')
     return row
+  }
+
+  // ---------------------------------------------------------------------------
+  // Learned cook-time tracking
+  // ---------------------------------------------------------------------------
+
+  async recordCookTime(authContext: AuthContext, orderItemId: string, actualPrepSeconds: number) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const ticketItem = await db
+        .select()
+        .from(kitchenTicketItems)
+        .where(and(eq(kitchenTicketItems.orderItemId, orderItemId), ne(kitchenTicketItems.status, 'voided')))
+        .then((rows) => rows[0])
+      if (!ticketItem) throw new NotFoundException('active ticket item not found for this order item')
+
+      const [sample] = await db
+        .insert(cookTimeSamples)
+        .values({
+          organizationId: authContext.organizationId,
+          locationId: ticketItem.locationId,
+          stationId: ticketItem.stationId,
+          productId: ticketItem.orderItemId,
+          prepSeconds: actualPrepSeconds,
+        })
+        .returning()
+      if (!sample) throw new Error('failed to record cook time sample')
+
+      return sample
+    })
+  }
+
+  async getLearnedCookTime(authContext: AuthContext, stationId: string, productId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const samples = await db
+        .select()
+        .from(cookTimeSamples)
+        .where(and(eq(cookTimeSamples.stationId, stationId), eq(cookTimeSamples.productId, productId)))
+        .orderBy(desc(cookTimeSamples.observedAt))
+        .limit(10)
+
+      if (samples.length === 0) return { stationId, productId, averagePrepSeconds: null, sampleCount: 0 }
+
+      const total = samples.reduce((sum, s) => sum + s.prepSeconds, 0)
+      return {
+        stationId,
+        productId,
+        averagePrepSeconds: Math.round(total / samples.length),
+        sampleCount: samples.length,
+      }
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cross-station delay alert
+  // ---------------------------------------------------------------------------
+
+  private async checkAndCreateDelayAlert(db: Db, authContext: AuthContext, stationId: string, ticketItemId: string) {
+    const station = await this.loadStation(db, authContext.organizationId, stationId)
+    if (station.stationType !== 'kitchen') return
+
+    const [ticketItem] = await db
+      .select()
+      .from(kitchenTicketItems)
+      .where(eq(kitchenTicketItems.id, ticketItemId))
+    if (!ticketItem || ticketItem.status !== 'in_progress' || !ticketItem.startedAt) return
+
+    const elapsedSeconds = this.ageSeconds(ticketItem.startedAt)
+    const threshold = Math.round(station.expectedPrepTimeSeconds * 1.5)
+
+    if (elapsedSeconds > threshold) {
+      const hasPending = await this.staffNotifications.hasPending(db, authContext.organizationId, 'kds_delay_alert', ticketItemId)
+      if (!hasPending) {
+        await this.staffNotifications.create(db, {
+          organizationId: authContext.organizationId,
+          locationId: ticketItem.locationId,
+          notificationType: 'kds_delay_alert',
+          message: `Order ${ticketItem.orderId} at ${station.name} is running behind — current wait ${elapsedSeconds}s`,
+          reason: ticketItemId,
+        })
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Order consolidation
+  // ---------------------------------------------------------------------------
+
+  async getConsolidatedStationView(authContext: AuthContext, stationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const station = await this.loadStation(db, authContext.organizationId, stationId)
+      await this.assertPermission(db, authContext, VIEW_PERMISSION)
+
+      const tickets = await db
+        .select()
+        .from(kitchenTickets)
+        .where(and(eq(kitchenTickets.stationId, stationId), ne(kitchenTickets.status, 'voided')))
+
+      const ticketIds = tickets.map((t) => t.id)
+      const items = ticketIds.length
+        ? await db
+            .select()
+            .from(kitchenTicketItems)
+            .where(inArray(kitchenTicketItems.ticketId, ticketIds))
+        : []
+
+      const ticketsWithItems = tickets
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        .map((ticket) => {
+          const ticketItems = items
+            .filter((item) => item.ticketId === ticket.id)
+            .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+            .map((item) => this.serializeTicketItem(item))
+          return {
+            ...ticket,
+            ageSeconds: this.ageSeconds(ticket.createdAt),
+            readyItems: ticketItems.filter((item) => item.status === 'ready').length,
+            totalItems: ticketItems.length,
+            items: ticketItems,
+          }
+        })
+
+      return {
+        station,
+        tickets: ticketsWithItems,
+        batches: this.buildConsolidatedBatches(items),
+      }
+    })
+  }
+
+  private buildConsolidatedBatches(items: typeof kitchenTicketItems.$inferSelect[]) {
+    const grouped = new Map<string, Array<typeof kitchenTicketItems.$inferSelect & { ticketId: string; createdAt: Date }>>()
+    for (const item of items.filter((entry) => !['ready', 'voided'].includes(entry.status))) {
+      const key = [item.stationId, item.nameSnapshot, item.course ?? '', item.kitchenNote ?? ''].join('::')
+      const list = grouped.get(key) ?? []
+      list.push(item)
+      grouped.set(key, list)
+    }
+
+    return [...grouped.entries()].map(([, rows]) => ({
+      nameSnapshot: rows[0]!.nameSnapshot,
+      quantity: rows.reduce((sum, row) => sum + row.quantity, 0),
+      quantityTotal: rows.reduce((sum, row) => sum + row.quantity, 0),
+      earliestTicketTime: [...rows].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())[0]!.createdAt,
+      ticketIds: [...new Set(rows.map((row) => row.ticketId))],
+      oldestAgeSeconds: Math.max(...rows.map((row) => this.ageSeconds(row.createdAt))),
+    }))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rush / VIP flagging
+  // ---------------------------------------------------------------------------
+
+  async flagRushOrder(authContext: AuthContext, orderId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      await this.assertPermission(db, authContext, VIEW_PERMISSION)
+      const updated = await db
+        .update(kitchenTickets)
+        .set({ isRush: true })
+        .where(and(eq(kitchenTickets.orderId, orderId), eq(kitchenTickets.organizationId, authContext.organizationId)))
+        .returning()
+      return updated
+    })
+  }
+
+  async flagVipOrder(authContext: AuthContext, orderId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      await this.assertPermission(db, authContext, VIEW_PERMISSION)
+      const updated = await db
+        .update(kitchenTickets)
+        .set({ isVip: true })
+        .where(and(eq(kitchenTickets.orderId, orderId), eq(kitchenTickets.organizationId, authContext.organizationId)))
+        .returning()
+      return updated
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bar station extension
+  // ---------------------------------------------------------------------------
+
+  async recordPourCost(authContext: AuthContext, ticketItemId: string, actualPouredMl: number, theoreticalMl: number) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const item = await this.loadTicketItem(db, authContext.organizationId, ticketItemId)
+      const station = await this.loadStation(db, authContext.organizationId, item.stationId)
+      if (station.stationType !== 'bar') {
+        throw new BadRequestException({ code: 'not_a_bar_station', message: 'pour cost can only be recorded on bar stations' })
+      }
+      const variance = Math.max(0, theoreticalMl - actualPouredMl)
+      const [updated] = await db
+        .update(kitchenTicketItems)
+        .set({ pourCost: variance })
+        .where(eq(kitchenTicketItems.id, ticketItemId))
+        .returning()
+      if (!updated) throw new Error('failed to record pour cost')
+      return updated
+    })
+  }
+
+  async getBarTabSummary(authContext: AuthContext, stationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const station = await this.loadStation(db, authContext.organizationId, stationId)
+      if (station.stationType !== 'bar') {
+        throw new BadRequestException({ code: 'not_a_bar_station', message: 'this endpoint is only available for bar stations' })
+      }
+      await this.assertPermission(db, authContext, VIEW_PERMISSION)
+
+      const tickets = await db
+        .select()
+        .from(kitchenTickets)
+        .where(and(
+          eq(kitchenTickets.stationId, stationId),
+          ne(kitchenTickets.status, 'voided'),
+          ne(kitchenTickets.status, 'ready'),
+        ))
+
+      const ticketIds = tickets.map((t) => t.id)
+      const items = ticketIds.length
+        ? await db.select().from(kitchenTicketItems).where(inArray(kitchenTicketItems.ticketId, ticketIds))
+        : []
+
+      const tabs = tickets.map((ticket) => {
+        const ticketItems = items.filter((item) => item.ticketId === ticket.id)
+        const totalPourCost = ticketItems.reduce((sum, item) => sum + item.pourCost, 0)
+        return {
+          ticketId: ticket.id,
+          orderId: ticket.orderId,
+          status: ticket.status,
+          itemCount: ticketItems.length,
+          totalPourCost,
+          items: ticketItems.map((item) => this.serializeTicketItem(item)),
+        }
+      })
+
+      return { station, openTabs: tabs }
+    })
+  }
+
+  async batchCloseTabs(authContext: AuthContext, stationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const station = await this.loadStation(db, authContext.organizationId, stationId)
+      if (station.stationType !== 'bar') {
+        throw new BadRequestException({ code: 'not_a_bar_station', message: 'this endpoint is only available for bar stations' })
+      }
+      await this.assertPermission(db, authContext, MANAGE_STATIONS_PERMISSION)
+
+      const tickets = await db
+        .select()
+        .from(kitchenTickets)
+        .where(and(
+          eq(kitchenTickets.stationId, stationId),
+          ne(kitchenTickets.status, 'voided'),
+          ne(kitchenTickets.status, 'ready'),
+        ))
+
+      const ticketIds = tickets.map((t) => t.id)
+      if (ticketIds.length === 0) return { closed: 0 }
+
+      await db
+        .update(kitchenTickets)
+        .set({ status: 'ready', readyAt: new Date() })
+        .where(inArray(kitchenTickets.id, ticketIds))
+
+      for (const ticketId of ticketIds) {
+        await this.refreshTicketOrderAndTableState(db, authContext.organizationId, ticketId, tickets.find((t) => t.id === ticketId)!.orderId)
+      }
+
+      return { closed: ticketIds.length }
+    })
   }
 }

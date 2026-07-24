@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
+import { Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common'
 import type { Request } from 'express'
 
 import { JwtAuthGuard } from '../../core/auth/jwt-auth.guard.js'
 import { RequirePermission } from '../../core/permissions/require-permission.decorator.js'
 import { ValidatedBody } from '../../core/validation/validated-body.decorator.js'
 import { CreateMenuDto } from './dto/create-menu.dto.js'
+import { UpdateMenuDto } from './dto/update-menu.dto.js'
 import { MenusService } from './menus.service.js'
 
 @Controller('api/v1/menus')
@@ -30,7 +31,7 @@ export class MenusController {
 
   @Patch(':id')
   @RequirePermission('products:manage')
-  update(@Param('id') id: string, @Body() body: any, @Req() req: Request) {
+  update(@Param('id') id: string, @ValidatedBody(UpdateMenuDto) body: UpdateMenuDto, @Req() req: Request) {
     return this.menusService.update(req.authContext!, id, body)
   }
 

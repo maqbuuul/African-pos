@@ -5,6 +5,7 @@ export class CreateInventoryItemDto {
   @IsOptional() @IsString() itemType?: string
   @IsOptional() @IsString() sku?: string
   @IsOptional() @IsString() barcode?: string
+  @IsOptional() @IsString() photoUrl?: string
   @IsString() unit!: string
   @IsOptional() @IsString() category?: string
   @IsOptional() @IsUUID() preferredSupplierId?: string

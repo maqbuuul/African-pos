@@ -1,4 +1,6 @@
-import { IsBoolean, IsInt, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator'
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator'
+
+const STATION_TYPES = ['kitchen', 'bar'] as const
 
 export class CreateKdsStationDto {
   @IsUUID()
@@ -24,6 +26,11 @@ export class CreateKdsStationDto {
   @IsOptional()
   @IsBoolean()
   isExpo?: boolean
+
+  @IsOptional()
+  @IsString()
+  @IsIn(STATION_TYPES)
+  stationType?: (typeof STATION_TYPES)[number]
 
   @IsOptional()
   @IsInt()
