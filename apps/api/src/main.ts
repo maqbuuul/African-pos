@@ -5,7 +5,6 @@ import { ValidationPipe } from '@nestjs/common'
 
 import { AppModule } from './app.module.js'
 import { ApprovalRequiredFilter } from './core/errors/approval-required.filter.js'
-import { ResponseEnvelopeInterceptor } from './core/response-envelope/response-envelope.interceptor.js'
 
 const start = async () => {
   const app = await NestFactory.create(AppModule, {

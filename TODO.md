@@ -305,6 +305,44 @@ it's clean — fix in the order below.
         pre-refactor code), not fixed here since they're unrelated to
         module boundaries.
       _Effort: Large (refactor)_
+      **Follow-up (2026-07-25):** the "accepted exception" above is now
+      closed for everything except `reports.service.ts`/
+      `whatsapp-reports.service.ts` reads, which stay a *permanent,
+      enforced* allowlist rather than an unenforced exception. Added
+      `scripts/check-module-boundaries.mts` — a blocking CI step
+      (`pnpm check:boundaries`) that statically parses every module's
+      `owns` manifest against `packages/database/src/schema`, and fails
+      on any cross-module table read/write outside the reports allowlist.
+      Fixed the real violations it found in `crm.service.ts`,
+      `finance/shifts.service.ts`, `notifications/receipts.service.ts`,
+      `payments.service.ts`, `restaurant/tables.service.ts`/
+      `kds.service.ts`, `sync/sync.service.ts`, `staff-report.service.ts`,
+      and reworked `qr-order.service.ts` (previously bypassed
+      Restaurant/Products/Orders' services entirely despite importing
+      them correctly). Also fixed manifest drift the checker caught:
+      `staff` claimed nonexistent `staff_sessions`/`attendance` (real
+      table is `staff_attendance`, core-owned); `notifications` claimed
+      nonexistent `notification_templates`/`notification_deliveries`;
+      `retail` duplicate-claimed `stock_counts` (inventory's, stale
+      copy-paste); `product_modifier_groups`/`cook_time_samples`/`users`/
+      `tenant_settings`/RBAC tables were unclaimed by any module.
+      Introduced a new Notifications↔Payments `forwardRef` cycle
+      (`ReceiptsService` now reads confirmed payments via
+      `PaymentsService`); this revealed that a longer (4+ module) ES-import
+      cycle needs `forwardRef()` on *every* edge in the cycle, not just the
+      edge with a direct service-to-service dependency — `payments.module.ts`
+      wrapping only `NotificationsModule` and leaving its `OrdersModule`
+      import plain caused a real boot-time `ReferenceError: Cannot access
+      'OrdersModule' before initialization` (TDZ on a circular ESM import,
+      distinct from NestJS's own DI-resolution ordering) once Notifications
+      started importing both Orders and Payments — fixed by also wrapping
+      `OrdersModule` in `payments.module.ts`/`notifications/index.ts` and
+      `NotificationsModule` in `restaurant.module.ts`. Verified by booting
+      the API (`Nest application successfully started`, zero DI errors) and
+      a live `GET /health` → `200`; full seeded-DB business-flow driving
+      (shift close, QR order, receipt generation, offline sync, chama
+      routing, scheduled reports) was not re-run this session — recommended
+      before merge, per the verified-for-real standard above.
 - [x] **A3 — Add dependency-vulnerability and secret-scanning jobs to CI**
       Done 2026-07-24 — new `security` job in `.github/workflows/ci.yml`:
       `pnpm audit --audit-level=high` (moderate/low findings are common

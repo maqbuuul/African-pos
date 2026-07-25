@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 
 import { AuditModule } from '../../core/audit/audit.module.js'
+import { NotificationsModule } from '../notifications/index.js'
 import { SyncController } from './sync.controller.js'
 import { SyncService } from './sync.service.js'
 
@@ -11,7 +12,7 @@ export const syncModule = {
 } as const
 
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, NotificationsModule],
   controllers: [SyncController],
   providers: [SyncService],
   exports: [SyncService],

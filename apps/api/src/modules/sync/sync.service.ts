@@ -6,8 +6,6 @@ import {
   syncConflicts,
   syncCursors,
   syncOperations,
-  taxComplianceSubmissions,
-  receipts,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -20,6 +18,7 @@ import {
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { ReceiptsService } from '../notifications/receipts.service.js'
 import type { PushOperationsDto } from './dto/push-operations.dto.js'
 import type { ResolveConflictDto } from './dto/resolve-conflict.dto.js'
 
@@ -30,6 +29,7 @@ export class SyncService {
   constructor(
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
+    @Inject(ReceiptsService) private readonly receiptsService: ReceiptsService,
   ) {}
 
   async pushOperations(
@@ -71,36 +71,24 @@ export class SyncService {
           const payload = op.payload as { receiptId?: string; billId?: string }
           if (payload?.receiptId) {
             try {
-              const [receipt] = await db
-                .select()
-                .from(receipts)
-                .where(and(eq(receipts.id, payload.receiptId), eq(receipts.organizationId, authContext.organizationId)))
-                .limit(1)
-              if (receipt) {
-                const [submission] = await db
-                  .insert(taxComplianceSubmissions)
-                  .values({
-                    organizationId: authContext.organizationId,
-                    locationId: receipt.locationId,
-                    receiptId: receipt.id,
-                    country: 'KE',
-                    provider: 'kra_etims',
-                    submissionStatus: 'queued',
-                    requestPayload: op.payload as Record<string, unknown>,
-                  })
-                  .returning()
-                if (submission) {
-                  await this.auditLog.record({
-                    organizationId: authContext.organizationId,
-                    locationId: receipt.locationId,
-                    actorType: 'system',
-                    actorId: authContext.actorId,
-                    action: 'tax_compliance.queued_from_sync',
-                    entityType: 'tax_compliance_submission',
-                    entityId: submission.id,
-                    newValue: { receiptId: receipt.id, source: 'offline_sync' },
-                  })
-                }
+              // receipts/tax_compliance_submissions are notifications-owned.
+              const result = await this.receiptsService.recordOfflineTaxSubmission(
+                db,
+                authContext.organizationId,
+                payload.receiptId,
+                op.payload as Record<string, unknown>,
+              )
+              if (result) {
+                await this.auditLog.record({
+                  organizationId: authContext.organizationId,
+                  locationId: result.locationId,
+                  actorType: 'system',
+                  actorId: authContext.actorId,
+                  action: 'tax_compliance.queued_from_sync',
+                  entityType: 'tax_compliance_submission',
+                  entityId: result.submission.id,
+                  newValue: { receiptId: payload.receiptId, source: 'offline_sync' },
+                })
               }
             } catch {
               // best-effort forwarding; the sync op is recorded regardless
@@ -429,5 +417,16 @@ export class SyncService {
         ),
       )
     return existing ?? null
+  }
+
+  // db-first — used by ShiftsService.close() to block closing while sync
+  // operations are still pending for the org. sync_operations is sync-owned.
+  async hasPendingSyncOperations(db: Db, organizationId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: syncOperations.id })
+      .from(syncOperations)
+      .where(and(eq(syncOperations.organizationId, organizationId), eq(syncOperations.status, 'pending')))
+      .limit(1)
+    return row != null
   }
 }

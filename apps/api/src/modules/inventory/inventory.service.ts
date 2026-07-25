@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException, BadRequestException } from '@nestjs/common'
+import { Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, desc, eq, isNull, lte, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
@@ -229,7 +229,6 @@ export class InventoryService {
 
   async createPurchaseOrder(auth: AuthContext, dto: CreatePurchaseOrderDto) {
     return withTenantContext(this.pool, auth.organizationId, async (db) => {
-      const { items: _items, ...poFields } = dto
       const pos = await db.insert(purchaseOrders).values({
         organizationId: auth.organizationId,
         locationId: auth.locationId ?? '',

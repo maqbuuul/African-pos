@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 
 import { AuditModule } from '../../core/audit/audit.module.js'
+import { OrdersModule } from '../orders/orders.module.js'
 import { CrmController } from './crm.controller.js'
 import { CrmService } from './crm.service.js'
 
@@ -11,7 +12,7 @@ export const crmModule = {
 } as const
 
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, OrdersModule],
   controllers: [CrmController],
   providers: [CrmService],
   exports: [CrmService],

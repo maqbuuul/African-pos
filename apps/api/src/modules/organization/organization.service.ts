@@ -1,7 +1,7 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import { organizations, withTenantContext } from '@hospitality-os/database'
+import { locations, organizations, withTenantContext, type Db } from '@hospitality-os/database'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
@@ -95,5 +95,26 @@ export class OrganizationService {
     })
 
     return row
+  }
+
+  // ---------------------------------------------------------------------------
+  // db-first — cross-module read helpers (ReceiptsService needs organization
+  // and location data to render a receipt). organizations/locations are
+  // organization-owned.
+  // ---------------------------------------------------------------------------
+
+  async getLocationById(db: Db, organizationId: string, locationId: string) {
+    const [location] = await db
+      .select()
+      .from(locations)
+      .where(and(eq(locations.id, locationId), eq(locations.organizationId, organizationId)))
+    if (!location) throw new NotFoundException({ code: 'location_not_found', message: 'location not found' })
+    return location
+  }
+
+  async getOrganizationForRead(db: Db, organizationId: string) {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, organizationId))
+    if (!org) throw new NotFoundException({ code: 'org_not_found', message: 'organization not found' })
+    return org
   }
 }

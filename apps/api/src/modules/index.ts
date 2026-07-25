@@ -20,7 +20,7 @@ import { staffModule, StaffModule } from './staff/index.js'
 import { syncModule, SyncModule } from './sync/index.js'
 
 
-const plannedModules = [
+export const plannedModules = [
   auditModule,
   crmModule,
   financeModule,

@@ -14,7 +14,7 @@ import { ProductsService } from './products.service.js'
 export const productsModule = {
   name: 'products',
   phase: 'restaurant-mvp',
-  owns: ['menus', 'menu_categories', 'products', 'product_prices', 'modifier_groups', 'modifiers'],
+  owns: ['menus', 'menu_categories', 'products', 'product_prices', 'modifier_groups', 'modifiers', 'product_modifier_groups'],
 } as const
 
 @Module({

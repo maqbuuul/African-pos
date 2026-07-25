@@ -3,7 +3,9 @@ import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-
 import type { Pool } from 'pg'
 import {
   menuCategories,
+  menus,
   modifierGroups,
+  modifiers,
   productModifierGroups,
   productPrices,
   products,
@@ -466,5 +468,27 @@ export class ProductsService {
         .orderBy(sql`COUNT(*) DESC`)
       return { rows }
     })
+  }
+
+  // db-first — QrOrderService owns no tables (see qr-order.module.ts's
+  // `owns: []`); the full customer-facing menu catalog is products-owned.
+  // Skips the modifier/price fan-out entirely when there are no available
+  // products, matching the original inline query's short-circuit.
+  async getMenuCatalogForLocation(db: Db, organizationId: string, locationId: string) {
+    const [menuList, categories, productList] = await Promise.all([
+      db.select().from(menus).where(and(eq(menus.organizationId, organizationId), eq(menus.locationId, locationId))),
+      db.select().from(menuCategories).where(and(eq(menuCategories.organizationId, organizationId), eq(menuCategories.locationId, locationId))),
+      db.select().from(products).where(and(eq(products.organizationId, organizationId), eq(products.locationId, locationId), eq(products.status, 'active'), eq(products.isAvailable, true))),
+    ])
+    if (productList.length === 0) {
+      return { menus: menuList, categories, products: [] as (typeof products.$inferSelect)[] }
+    }
+    const [prices, links, mgs, allMods] = await Promise.all([
+      db.select().from(productPrices).where(and(eq(productPrices.organizationId, organizationId), isNull(productPrices.effectiveTo))),
+      db.select().from(productModifierGroups).where(eq(productModifierGroups.organizationId, organizationId)),
+      db.select().from(modifierGroups).where(eq(modifierGroups.organizationId, organizationId)),
+      db.select().from(modifiers).where(eq(modifiers.organizationId, organizationId)),
+    ])
+    return { menus: menuList, categories, products: productList, productPrices: prices, productModifierGroups: links, modifierGroups: mgs, modifiers: allMods }
   }
 }

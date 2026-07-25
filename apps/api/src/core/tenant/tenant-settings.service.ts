@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import { and, eq, isNull } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import { tenantSettings, type Db } from '@hospitality-os/database'
 
 // Reads the tenant_settings table's org-default/location-override pair (see
@@ -24,5 +24,52 @@ export class TenantSettingsService {
       .from(tenantSettings)
       .where(and(eq(tenantSettings.organizationId, organizationId), isNull(tenantSettings.locationId), eq(tenantSettings.key, key)))
     return orgRow ? (orgRow.value as T) : fallback
+  }
+
+  // Upserts the org-default (locationId omitted/null) or a location override
+  // (locationId given) row for a key — two separate partial unique indexes
+  // back these (tenant_settings_org_key_key / tenant_settings_org_location_key_key,
+  // see packages/database/src/schema/shared/index.ts), so the conflict target
+  // differs by case rather than a single one covering both.
+  async set<T>(
+    db: Db,
+    organizationId: string,
+    key: string,
+    value: T,
+    options?: { locationId?: string | null; updatedByStaffId?: string | null },
+  ): Promise<{ value: T; updatedAt: Date }> {
+    const locationId = options?.locationId ?? null
+    const updatedByStaffId = options?.updatedByStaffId ?? null
+    const [row] = locationId
+      ? await db
+          .insert(tenantSettings)
+          .values({ organizationId, locationId, key, value, updatedByStaffId })
+          .onConflictDoUpdate({
+            target: [tenantSettings.organizationId, tenantSettings.locationId, tenantSettings.key],
+            set: { value, updatedAt: sql`now()`, updatedByStaffId },
+            targetWhere: sql`${tenantSettings.locationId} is not null`,
+          })
+          .returning()
+      : await db
+          .insert(tenantSettings)
+          .values({ organizationId, locationId: null, key, value, updatedByStaffId })
+          .onConflictDoUpdate({
+            target: [tenantSettings.organizationId, tenantSettings.key],
+            set: { value, updatedAt: sql`now()`, updatedByStaffId },
+            targetWhere: sql`${tenantSettings.locationId} is null`,
+          })
+          .returning()
+    if (!row) throw new Error('failed to upsert tenant setting')
+    return { value: row.value as T, updatedAt: row.updatedAt }
+  }
+
+  // Org-wide keys matching a prefix (e.g. 'report_schedule_') — used by
+  // ReportsService.getScheduledReports, which needs every schedule row, not
+  // one key at a time.
+  async listByKeyPrefix(db: Db, organizationId: string, prefix: string): Promise<{ key: string; value: unknown; updatedAt: Date }[]> {
+    return db
+      .select({ key: tenantSettings.key, value: tenantSettings.value, updatedAt: tenantSettings.updatedAt })
+      .from(tenantSettings)
+      .where(and(eq(tenantSettings.organizationId, organizationId), sql`${tenantSettings.key} LIKE ${prefix + '%'}`))
   }
 }

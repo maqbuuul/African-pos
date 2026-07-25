@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto'
 
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
-  billItems,
-  bills,
   decryptCredentials,
   encryptCredentials,
   integrationConnections,
@@ -69,7 +67,10 @@ export class PaymentsService {
     @Inject(ApprovalsService) private readonly approvalsService: ApprovalsService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
-    @Inject(ReceiptsService) private readonly receiptsService: ReceiptsService,
+    // forwardRef: ReceiptsService now injects PaymentsService back (reading
+    // confirmed payments for a bill) — genuine two-way dependency, same
+    // pattern as Orders<->Restaurant (see notifications/index.ts).
+    @Inject(forwardRef(() => ReceiptsService)) private readonly receiptsService: ReceiptsService,
     @Inject(OutboxService) private readonly outbox: OutboxService,
     @Inject(OrdersService) private readonly ordersService: OrdersService,
     @Inject(ProductsService) private readonly productsService: ProductsService,
@@ -1078,15 +1079,7 @@ export class PaymentsService {
     splitId: string,
   ) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const [bill] = await db
-        .select()
-        .from(bills)
-        .where(
-          and(eq(bills.id, billId), eq(bills.organizationId, authContext.organizationId)),
-        )
-      if (!bill) {
-        throw new NotFoundException({ code: 'bill_not_found', message: 'bill not found' })
-      }
+      const bill = await this.ordersService.getBillById(db, authContext.organizationId, billId)
 
       const { signPaymentLinkToken } = await import('./payment-link-jwt.js')
       const token = await signPaymentLinkToken({
@@ -1297,6 +1290,49 @@ export class PaymentsService {
   }
 
   // ---------------------------------------------------------------------------
+  // db-first — cross-module read helpers for ShiftsService/ReceiptsService.
+  // payments/refunds/payment_intents are payments-owned.
+  // ---------------------------------------------------------------------------
+
+  async hasPendingPaymentIntents(db: Db, organizationId: string, locationId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.locationId, locationId),
+          eq(paymentIntents.organizationId, organizationId),
+          inArray(paymentIntents.status, ['pending', 'processing']),
+        ),
+      )
+      .limit(1)
+    return row != null
+  }
+
+  async listConfirmedPaymentsForOrders(db: Db, organizationId: string, orderIds: string[]) {
+    if (orderIds.length === 0) return []
+    return db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.status, 'confirmed'), inArray(payments.orderId, orderIds), eq(payments.organizationId, organizationId)))
+  }
+
+  async listRefundsForPayments(db: Db, organizationId: string, paymentIds: string[], statuses: string[]) {
+    if (paymentIds.length === 0) return []
+    return db
+      .select()
+      .from(refunds)
+      .where(and(eq(refunds.organizationId, organizationId), inArray(refunds.paymentId, paymentIds), inArray(refunds.status, statuses)))
+  }
+
+  async listConfirmedPaymentsForBill(db: Db, organizationId: string, billId: string) {
+    return db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.billId, billId), eq(payments.organizationId, organizationId), eq(payments.status, 'confirmed')))
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -1327,13 +1363,7 @@ export class PaymentsService {
 
   // Load bill, assert org ownership, and block payments on terminal states.
   private async loadBill(db: Db, organizationId: string, billId: string) {
-    const [bill] = await db
-      .select()
-      .from(bills)
-      .where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
-    if (!bill) {
-      throw new NotFoundException({ code: 'bill_not_found', message: 'bill not found' })
-    }
+    const bill = await this.ordersService.getBillById(db, organizationId, billId)
     if (bill.status === 'voided') {
       throw new BadRequestException({ code: 'bill_voided', message: 'bill has been voided' })
     }
@@ -1346,14 +1376,7 @@ export class PaymentsService {
   // Read-only bill load (for getPaymentsForBill) — no status guard needed since
   // we only want to confirm ownership before listing historical payments.
   private async loadBillForRead(db: Db, organizationId: string, billId: string) {
-    const [bill] = await db
-      .select()
-      .from(bills)
-      .where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
-    if (!bill) {
-      throw new NotFoundException({ code: 'bill_not_found', message: 'bill not found' })
-    }
-    return bill
+    return this.ordersService.getBillById(db, organizationId, billId)
   }
 
   // Load integration credentials, preferring location-specific over org-wide.
@@ -1436,22 +1459,18 @@ export class PaymentsService {
     billId: string,
     organizationId: string,
   ): Promise<void> {
-    const [bill] = await db
-      .select()
-      .from(bills)
-      .where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
-    if (!bill || bill.status === 'paid') return
+    // Tolerates a missing bill (silent no-op) rather than throwing — matches
+    // the original inline query's behavior; getBillById throws, so the
+    // "not found" case is caught here instead.
+    let bill
+    try {
+      bill = await this.ordersService.getBillById(db, organizationId, billId)
+    } catch {
+      return
+    }
+    if (bill.status === 'paid') return
 
-    const confirmedPayments = await db
-      .select()
-      .from(payments)
-      .where(
-        and(
-          eq(payments.billId, billId),
-          eq(payments.organizationId, organizationId),
-          eq(payments.status, 'confirmed'),
-        ),
-      )
+    const confirmedPayments = await this.listConfirmedPaymentsForBill(db, organizationId, billId)
 
     const totalConfirmed = confirmedPayments.reduce((sum, p) => sum + p.amount, 0)
     if (totalConfirmed < bill.totalAmount) return

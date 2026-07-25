@@ -4,17 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common'
-import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   cashDrawerAdjustments,
   cashDrawerSessions,
-  orders,
-  paymentIntents,
-  payments,
-  refunds,
   shifts,
-  syncOperations,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
@@ -26,8 +21,12 @@ import {
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
+import { TenantSettingsService } from '../../core/tenant/tenant-settings.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
 import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
+import { OrdersService } from '../orders/orders.service.js'
+import { PaymentsService } from '../payments/payments.service.js'
+import { SyncService } from '../sync/sync.service.js'
 import type { AdjustDrawerDto } from './dto/adjust-drawer.dto.js'
 import type { CloseShiftDto } from './dto/close-shift.dto.js'
 import type { OpenShiftDto } from './dto/open-shift.dto.js'
@@ -41,6 +40,10 @@ export class ShiftsService {
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
     @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
+    @Inject(TenantSettingsService) private readonly tenantSettings: TenantSettingsService,
+    @Inject(OrdersService) private readonly ordersService: OrdersService,
+    @Inject(PaymentsService) private readonly paymentsService: PaymentsService,
+    @Inject(SyncService) private readonly syncService: SyncService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -134,33 +137,11 @@ export class ShiftsService {
       if (!dto.force) {
         const blocking: string[] = []
 
-        const openOrders = await db
-          .select({ id: orders.id })
-          .from(orders)
-          .where(
-            and(
-              eq(orders.locationId, shift.locationId),
-              eq(orders.organizationId, authContext.organizationId),
-              ne(orders.status, 'paid'),
-              ne(orders.status, 'voided'),
-              ne(orders.status, 'refunded'),
-            ),
-          )
-          .limit(1)
-        if (openOrders.length > 0) blocking.push('open_orders')
+        const hasOpenOrders = await this.ordersService.hasBlockingOpenOrders(db, authContext.organizationId, shift.locationId)
+        if (hasOpenOrders) blocking.push('open_orders')
 
-        const pendingPayments = await db
-          .select({ id: paymentIntents.id })
-          .from(paymentIntents)
-          .where(
-            and(
-              eq(paymentIntents.locationId, shift.locationId),
-              eq(paymentIntents.organizationId, authContext.organizationId),
-              inArray(paymentIntents.status, ['pending', 'processing']),
-            ),
-          )
-          .limit(1)
-        if (pendingPayments.length > 0) blocking.push('pending_payments')
+        const hasPendingPayments = await this.paymentsService.hasPendingPaymentIntents(db, authContext.organizationId, shift.locationId)
+        if (hasPendingPayments) blocking.push('pending_payments')
 
         const [session] = await db
           .select()
@@ -173,17 +154,8 @@ export class ShiftsService {
           )
         if (session && session.countedAmount === null) blocking.push('uncounted_drawer')
 
-        const unsynced = await db
-          .select({ id: syncOperations.id })
-          .from(syncOperations)
-          .where(
-            and(
-              eq(syncOperations.organizationId, authContext.organizationId),
-              eq(syncOperations.status, 'pending'),
-            ),
-          )
-          .limit(1)
-        if (unsynced.length > 0) blocking.push('unsynced_events')
+        const hasUnsynced = await this.syncService.hasPendingSyncOperations(db, authContext.organizationId)
+        if (hasUnsynced) blocking.push('unsynced_events')
 
         if (blocking.length > 0) {
           throw new BadRequestException({
@@ -583,33 +555,12 @@ export class ShiftsService {
 
     const startingCash = shift.startingCashAmount
 
-    const closedAt = shift.closedAt
-    const closedAtFilter = closedAt
-      ? sql`${orders.createdAt} <= ${closedAt}`
-      : undefined
-
-    const orderFilters = [eq(orders.organizationId, organizationId), sql`${orders.createdAt} >= ${shift.openedAt}`]
-    if (closedAtFilter) orderFilters.push(closedAtFilter)
-
-    const shiftOrders = await db
-      .select({ id: orders.id })
-      .from(orders)
-      .where(and(...orderFilters))
-    const orderIds = shiftOrders.map((o) => o.id)
+    const orderIds = await this.ordersService.findOrderIdsInWindow(db, organizationId, shift.openedAt, shift.closedAt)
 
     let cashPayments = 0
     let nonCashRevenue = 0
     if (orderIds.length > 0) {
-      const confirmedPayments = await db
-        .select()
-        .from(payments)
-        .where(
-          and(
-            eq(payments.status, 'confirmed'),
-            inArray(payments.orderId, orderIds),
-            eq(payments.organizationId, organizationId),
-          ),
-        )
+      const confirmedPayments = await this.paymentsService.listConfirmedPaymentsForOrders(db, organizationId, orderIds)
 
       for (const p of confirmedPayments) {
         if (p.method === 'cash') {
@@ -618,16 +569,12 @@ export class ShiftsService {
         nonCashRevenue += p.amount
       }
 
-      const shiftRefunds = await db
-        .select()
-        .from(refunds)
-        .where(
-          and(
-            eq(refunds.organizationId, organizationId),
-            inArray(refunds.paymentId, confirmedPayments.map((p) => p.id)),
-            inArray(refunds.status, ['confirmed', 'requires_manual_settlement']),
-          ),
-        )
+      const shiftRefunds = await this.paymentsService.listRefundsForPayments(
+        db,
+        organizationId,
+        confirmedPayments.map((p) => p.id),
+        ['confirmed', 'requires_manual_settlement'],
+      )
 
       cashPayments -= shiftRefunds
         .filter((r) => r.method === 'cash')
@@ -680,32 +627,11 @@ export class ShiftsService {
       .where(and(eq(shifts.id, shiftId), eq(shifts.organizationId, organizationId)))
     if (!shift) return {}
 
-    const closedAt = shift.closedAt
-    const closedAtFilter = closedAt
-      ? sql`${orders.createdAt} <= ${closedAt}`
-      : undefined
-
-    const orderFilters = [eq(orders.organizationId, organizationId), sql`${orders.createdAt} >= ${shift.openedAt}`]
-    if (closedAtFilter) orderFilters.push(closedAtFilter)
-
-    const shiftOrders = await db
-      .select({ id: orders.id })
-      .from(orders)
-      .where(and(...orderFilters))
-    const orderIds = shiftOrders.map((o) => o.id)
+    const orderIds = await this.ordersService.findOrderIdsInWindow(db, organizationId, shift.openedAt, shift.closedAt)
 
     if (orderIds.length === 0) return {}
 
-    const confirmedPayments = await db
-      .select()
-      .from(payments)
-      .where(
-        and(
-          eq(payments.status, 'confirmed'),
-          inArray(payments.orderId, orderIds),
-          eq(payments.organizationId, organizationId),
-        ),
-      )
+    const confirmedPayments = await this.paymentsService.listConfirmedPaymentsForOrders(db, organizationId, orderIds)
 
     const breakdown: Record<string, { count: number; total: number }> = {}
     for (const p of confirmedPayments) {
@@ -726,11 +652,7 @@ export class ShiftsService {
     organizationId: string,
     locationId: string,
   ): Promise<number> {
-    const { TenantSettingsService } = await import(
-      '../../core/tenant/tenant-settings.service.js'
-    )
-    const settingsService = new TenantSettingsService()
-    const raw = await settingsService.get<string>(
+    const raw = await this.tenantSettings.get<string>(
       db,
       organizationId,
       VARIANCE_THRESHOLD_KEY,

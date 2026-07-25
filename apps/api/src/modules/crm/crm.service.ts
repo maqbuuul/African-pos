@@ -2,7 +2,6 @@ import { BadRequestException, Inject, Injectable, NotFoundException } from '@nes
 import { and, desc, eq, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
-  bills,
   customerCreditAccounts,
   customerFeedback,
   customerIdentities,
@@ -11,15 +10,15 @@ import {
   giftCards,
   loyaltyAccounts,
   loyaltyEvents,
-  orders,
-  tenantSettings,
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
 import type { GiftCardStatus } from '@hospitality-os/domain'
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
+import { TenantSettingsService } from '../../core/tenant/tenant-settings.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { OrdersService } from '../orders/orders.service.js'
 import type { CreateCreditAccountDto } from './dto/create-credit-account.dto.js'
 import type { CreateCustomerDto } from './dto/create-customer.dto.js'
 import type { CreateLoyaltyAccountDto } from './dto/create-loyalty-account.dto.js'
@@ -36,6 +35,8 @@ export class CrmService {
   constructor(
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
+    @Inject(TenantSettingsService) private readonly tenantSettings: TenantSettingsService,
+    @Inject(OrdersService) private readonly ordersService: OrdersService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -559,36 +560,22 @@ export class CrmService {
     }
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const config = { percentage, linkedAccountRef, enabled: true }
-      await db
-        .insert(tenantSettings)
-        .values({ organizationId: authContext.organizationId, locationId: null, key: 'chama_routing_config', value: config })
-        .onConflictDoUpdate({
-          target: [tenantSettings.organizationId, tenantSettings.key],
-          set: { value: config, updatedAt: sql`now()` },
-          targetWhere: sql`${tenantSettings.locationId} is null`,
-        })
+      await this.tenantSettings.set(db, authContext.organizationId, 'chama_routing_config', config)
       return { ...config, organizationId: authContext.organizationId, createdAt: new Date() }
     })
   }
 
   async processChamaRouting(authContext: AuthContext, locationId: string) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const setting = await db
-        .select()
-        .from(tenantSettings)
-        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'chama_routing_config'), sql`${tenantSettings.locationId} is null`))
-        .limit(1)
-        .then((r) => r[0] ?? null)
-      if (!setting) throw new NotFoundException('chama routing not configured — call setupChamaRouting first')
-      const config = setting.value as { percentage: number; linkedAccountRef: string; enabled: boolean }
+      const config = await this.tenantSettings.get<{ percentage: number; linkedAccountRef: string; enabled: boolean } | null>(
+        db,
+        authContext.organizationId,
+        'chama_routing_config',
+        null,
+      )
+      if (!config) throw new NotFoundException('chama routing not configured — call setupChamaRouting first')
       if (!config.enabled) throw new BadRequestException('chama routing is disabled')
-      const today = sql`CURRENT_DATE`
-      const rows = await db
-        .select({ totalAmount: bills.totalAmount })
-        .from(bills)
-        .innerJoin(orders, eq(bills.orderId, orders.id))
-        .where(and(eq(bills.organizationId, authContext.organizationId), eq(bills.locationId, locationId), eq(bills.status, 'paid'), sql`DATE(${bills.paidAt}) = ${today}`))
-      const totalRevenue = rows.reduce((sum, r) => sum + Number(r.totalAmount), 0)
+      const totalRevenue = await this.ordersService.sumPaidBillRevenue(db, authContext.organizationId, locationId)
       const chamaAmount = Math.round(totalRevenue * config.percentage / 100)
       return {
         totalRevenue,

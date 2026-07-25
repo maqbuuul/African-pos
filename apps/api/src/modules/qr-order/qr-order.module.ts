@@ -5,6 +5,7 @@ import { CrmModule } from '../crm/index.js'
 import { NotificationsModule } from '../notifications/index.js'
 import { OrdersModule } from '../orders/orders.module.js'
 import { PaymentsModule } from '../payments/index.js'
+import { ProductsModule } from '../products/products.module.js'
 import { RestaurantModule } from '../restaurant/restaurant.module.js'
 import { QrOrderController } from './qr-order.controller.js'
 import { QrOrderService } from './qr-order.service.js'
@@ -16,7 +17,7 @@ export const qrOrderModule = {
 } as const
 
 @Module({
-  imports: [AuditModule, PaymentsModule, RestaurantModule, OrdersModule, CrmModule, NotificationsModule],
+  imports: [AuditModule, PaymentsModule, RestaurantModule, OrdersModule, ProductsModule, CrmModule, NotificationsModule],
   controllers: [QrOrderController],
   providers: [QrOrderService],
 })

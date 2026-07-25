@@ -1,20 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
-import {
-  bills,
-  menuCategories,
-  menus,
-  modifierGroups,
-  modifiers,
-  orderItems,
-  orders,
-  productModifierGroups,
-  productPrices,
-  products,
-  restaurantTables,
-  withTenantContext,
-} from '@hospitality-os/database'
+import { withTenantContext } from '@hospitality-os/database'
 
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
@@ -23,6 +9,7 @@ import { CrmService } from '../crm/crm.service.js'
 import { StaffNotificationsService } from '../notifications/staff-notifications.service.js'
 import { OrdersService } from '../orders/orders.service.js'
 import { PaymentsService } from '../payments/payments.service.js'
+import { ProductsService } from '../products/products.service.js'
 import { TablesService } from '../restaurant/tables.service.js'
 import { signTableSessionToken, type TableSessionClaims } from './table-session.js'
 
@@ -42,19 +29,14 @@ export class QrOrderService {
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
     @Inject(TablesService) private readonly tablesService: TablesService,
     @Inject(OrdersService) private readonly ordersService: OrdersService,
+    @Inject(ProductsService) private readonly productsService: ProductsService,
     @Inject(CrmService) private readonly crmService: CrmService,
     @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
   ) {}
 
   async createSession(qrSlug: string) {
-    const table = await withTenantContext(this.pool, null as unknown as string, async (db) => {
-      const rows = await db
-        .select()
-        .from(restaurantTables)
-        .where(eq(restaurantTables.qrSlug, qrSlug))
-        .limit(1)
-      return rows[0] ?? null
-    })
+    // restaurant_tables is restaurant-owned.
+    const table = await withTenantContext(this.pool, null as unknown as string, (db) => this.tablesService.findByQrSlug(db, qrSlug))
     if (!table) throw new NotFoundException('table not found')
     if (table.status === 'blocked' || table.status === 'cleaning') {
       throw new BadRequestException({ code: 'table_unavailable', message: 'table is currently unavailable' })
@@ -63,23 +45,11 @@ export class QrOrderService {
   }
 
   async getMenu(session: TableSessionClaims) {
-    return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const [menuList, categories, productList] = await Promise.all([
-        db.select().from(menus).where(and(eq(menus.organizationId, session.organizationId), eq(menus.locationId, session.locationId))),
-        db.select().from(menuCategories).where(and(eq(menuCategories.organizationId, session.organizationId), eq(menuCategories.locationId, session.locationId))),
-        db.select().from(products).where(and(eq(products.organizationId, session.organizationId), eq(products.locationId, session.locationId), eq(products.status, 'active'), eq(products.isAvailable, true))),
-      ])
-      if (productList.length === 0) {
-        return { menus: menuList, categories, products: [] }
-      }
-      const [prices, links, mgs, allMods] = await Promise.all([
-        db.select().from(productPrices).where(and(eq(productPrices.organizationId, session.organizationId), isNull(productPrices.effectiveTo))),
-        db.select().from(productModifierGroups).where(eq(productModifierGroups.organizationId, session.organizationId)),
-        db.select().from(modifierGroups).where(eq(modifierGroups.organizationId, session.organizationId)),
-        db.select().from(modifiers).where(eq(modifiers.organizationId, session.organizationId)),
-      ])
-      return { menus: menuList, categories, products: productList, productPrices: prices, productModifierGroups: links, modifierGroups: mgs, modifiers: allMods }
-    })
+    // menus/menu_categories/products/product_prices/modifier_groups/
+    // modifiers/product_modifier_groups are all products-owned.
+    return withTenantContext(this.pool, session.organizationId, (db) =>
+      this.productsService.getMenuCatalogForLocation(db, session.organizationId, session.locationId),
+    )
   }
 
   async submitOrder(session: TableSessionClaims, items: OrderItemInput[]) {
@@ -95,17 +65,12 @@ export class QrOrderService {
   }
 
   async getOrder(session: TableSessionClaims, orderId: string) {
+    // orders/order_items/bills are orders-owned.
     return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const order = await db
-        .select()
-        .from(orders)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, session.organizationId)))
-        .limit(1)
-        .then((r) => r[0])
-      if (!order) throw new NotFoundException('order not found')
+      const order = await this.ordersService.getOrderById(db, session.organizationId, orderId)
       const [items, billList] = await Promise.all([
-        db.select().from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.organizationId, session.organizationId))),
-        db.select().from(bills).where(and(eq(bills.orderId, order.id), eq(bills.organizationId, session.organizationId))),
+        this.ordersService.listOrderItemsForOrder(db, session.organizationId, order.id),
+        this.ordersService.listBillsForOrder(db, session.organizationId, order.id),
       ])
       return { order, items, bills: billList }
     })
@@ -184,14 +149,10 @@ export class QrOrderService {
     // The client only ever holds an orderId (bills are created and tracked
     // server-side via requestBill) — resolve the open bill for this order
     // before delegating to PaymentsService, which operates on bill ids.
-    const bill = await withTenantContext(this.pool, session.organizationId, async (db) => {
-      return db
-        .select()
-        .from(bills)
-        .where(and(eq(bills.orderId, orderId), eq(bills.organizationId, session.organizationId), eq(bills.status, 'open')))
-        .limit(1)
-        .then((r) => r[0])
-    })
+    // bills is orders-owned.
+    const bill = await withTenantContext(this.pool, session.organizationId, (db) =>
+      this.ordersService.getOpenBillForOrder(db, session.organizationId, orderId),
+    )
     if (!bill) throw new NotFoundException('no open bill for this order — request the bill first')
 
     const { outstandingAmount, currency } = await this.paymentsService.getOutstandingBalance(authContext, bill.id)
@@ -248,54 +209,25 @@ export class QrOrderService {
   }
 
   async getOrderStatus(session: TableSessionClaims, orderId: string) {
+    // orders/order_items/bills are orders-owned; restaurant_tables is
+    // restaurant-owned. Table lookup tolerates "not found" (returns null,
+    // matching the original inline query's behavior) rather than throwing —
+    // a missing table shouldn't fail the whole status response.
     return withTenantContext(this.pool, session.organizationId, async (db) => {
-      const order = await db
-        .select()
-        .from(orders)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, session.organizationId)))
-        .limit(1)
-        .then((r) => r[0])
-      if (!order) throw new NotFoundException('order not found')
+      const order = await this.ordersService.getOrderById(db, session.organizationId, orderId)
       const [items, billList, table] = await Promise.all([
-        db.select().from(orderItems).where(and(eq(orderItems.orderId, order.id), eq(orderItems.organizationId, session.organizationId))),
-        db.select().from(bills).where(and(eq(bills.orderId, order.id), eq(bills.organizationId, session.organizationId))),
-        db.select().from(restaurantTables).where(eq(restaurantTables.id, session.tableId)).limit(1).then((r) => r[0]),
+        this.ordersService.listOrderItemsForOrder(db, session.organizationId, order.id),
+        this.ordersService.listBillsForOrder(db, session.organizationId, order.id),
+        this.tablesService.getByIdInTx(db, session.organizationId, session.tableId).catch(() => null),
       ])
       return { order, items, bills: billList, tableStatus: table?.status ?? null }
     })
   }
 
+  // Table-occupancy analytics — restaurant_tables is restaurant-owned, so
+  // this belongs in TablesService; qr-order just orchestrates the call.
   async tableUtilizationReport(authContext: AuthContext, locationId: string) {
-    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const [statusBreakdown, occupancyStats] = await Promise.all([
-        db
-          .select({
-            status: restaurantTables.status,
-            section: restaurantTables.section,
-            count: sql<number>`COUNT(*)`,
-            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
-            occupiedCapacity: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
-          })
-          .from(restaurantTables)
-          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
-          .groupBy(restaurantTables.status, restaurantTables.section)
-          .orderBy(restaurantTables.status, restaurantTables.section),
-        db
-          .select({
-            section: restaurantTables.section,
-            totalTables: sql<number>`COUNT(*)`,
-            occupiedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'occupied')`,
-            availableTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'available')`,
-            reservedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'reserved')`,
-            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
-            currentGuests: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
-          })
-          .from(restaurantTables)
-          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
-          .groupBy(restaurantTables.section),
-      ])
-      return { statusBreakdown, occupancyStats }
-    })
+    return this.tablesService.utilizationReport(authContext, locationId)
   }
 
   // A table-session customer has no staff/user identity — this synthesizes

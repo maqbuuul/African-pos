@@ -1212,6 +1212,101 @@ export class OrdersService {
     return item
   }
 
+  // db-first, deliberately NOT organization-scoped — mirrors
+  // KdsService.syncOrderItemFromKitchen's pre-existing behavior exactly
+  // (it already had `organizationId` in scope but passed null to its own
+  // local lookup). Whether that's intentional or a latent gap is a separate
+  // question from module boundaries; kept as-is here rather than silently
+  // tightened as part of this refactor.
+  async getOrderItemByIdUnscoped(db: Db, orderItemId: string): Promise<OrderItemRow> {
+    const [item] = await db.select().from(orderItems).where(eq(orderItems.id, orderItemId))
+    if (!item) throw new NotFoundException('order item not found')
+    return item
+  }
+
+  // db-first: bills/orders are orders-owned — every other module reads a
+  // single bill/order through these instead of querying the tables
+  // directly. Error shape ({ code, message }) matches the convention
+  // already used by payments.service.ts and receipts.service.ts, both of
+  // which call this.
+  async getBillById(db: Db, organizationId: string, billId: string): Promise<BillRow> {
+    const [bill] = await db.select().from(bills).where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
+    if (!bill) throw new NotFoundException({ code: 'bill_not_found', message: 'bill not found' })
+    return bill
+  }
+
+  async getOpenBillForOrder(db: Db, organizationId: string, orderId: string): Promise<BillRow | null> {
+    const [bill] = await db
+      .select()
+      .from(bills)
+      .where(and(eq(bills.orderId, orderId), eq(bills.organizationId, organizationId), eq(bills.status, 'open')))
+    return bill ?? null
+  }
+
+  async listOrderItemsForOrder(db: Db, organizationId: string, orderId: string): Promise<OrderItemRow[]> {
+    return db.select().from(orderItems).where(and(eq(orderItems.orderId, orderId), eq(orderItems.organizationId, organizationId)))
+  }
+
+  async listBillsForOrder(db: Db, organizationId: string, orderId: string): Promise<BillRow[]> {
+    return db.select().from(bills).where(and(eq(bills.orderId, orderId), eq(bills.organizationId, organizationId)))
+  }
+
+  async getOrderById(db: Db, organizationId: string, orderId: string): Promise<OrderRow> {
+    const [order] = await db.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+    if (!order) throw new NotFoundException({ code: 'order_not_found', message: 'order not found' })
+    return order
+  }
+
+  // Today's paid-bill revenue for a location — used by CrmService's chama/SACCO
+  // auto-routing. Matches the original inline query's use of CURRENT_DATE
+  // (server "today"), not a caller-supplied date.
+  async sumPaidBillRevenue(db: Db, organizationId: string, locationId: string): Promise<number> {
+    const rows = await db
+      .select({ totalAmount: bills.totalAmount })
+      .from(bills)
+      .innerJoin(orders, eq(bills.orderId, orders.id))
+      .where(
+        and(
+          eq(bills.organizationId, organizationId),
+          eq(bills.locationId, locationId),
+          eq(bills.status, 'paid'),
+          sql`DATE(${bills.paidAt}) = CURRENT_DATE`,
+        ),
+      )
+    return rows.reduce((sum, r) => sum + Number(r.totalAmount), 0)
+  }
+
+  // db-first: used by ShiftsService.close() to block closing while orders are
+  // still in flight for the shift's location.
+  async hasBlockingOpenOrders(db: Db, organizationId: string, locationId: string): Promise<boolean> {
+    const [row] = await db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.locationId, locationId),
+          eq(orders.organizationId, organizationId),
+          ne(orders.status, 'paid'),
+          ne(orders.status, 'voided'),
+          ne(orders.status, 'refunded'),
+        ),
+      )
+      .limit(1)
+    return row != null
+  }
+
+  // db-first: used by ShiftsService's cash-metrics/payment-breakdown
+  // computation to find every order that fell within the shift's open
+  // window. Preserves the original query's behavior exactly, including
+  // that it is NOT location-scoped (org + time window only) — that's
+  // pre-existing, not something this refactor should silently change.
+  async findOrderIdsInWindow(db: Db, organizationId: string, openedAt: Date, closedAt?: Date | null): Promise<string[]> {
+    const filters = [eq(orders.organizationId, organizationId), sql`${orders.createdAt} >= ${openedAt}`]
+    if (closedAt) filters.push(sql`${orders.createdAt} <= ${closedAt}`)
+    const rows = await db.select({ id: orders.id }).from(orders).where(and(...filters))
+    return rows.map((r) => r.id)
+  }
+
   // Fires every still-draft item in a named course — the QR-ordering
   // equivalent of send(), which fires by explicit itemIds instead (no
   // assertOwnOrderOrManager check: QR orders carry no staffId to compare

@@ -8,12 +8,13 @@ import { OrganizationService } from './organization.service.js'
 export const organizationModule = {
   name: 'organization',
   phase: 'foundation',
-  owns: ['organizations', 'businesses', 'locations', 'devices'],
+  owns: ['organizations', 'businesses', 'locations', 'devices', 'users', 'tenant_settings'],
 } as const
 
 @Module({
   imports: [AuditModule, PermissionsModule],
   controllers: [OrganizationController],
   providers: [OrganizationService],
+  exports: [OrganizationService],
 })
 export class OrganizationModule {}

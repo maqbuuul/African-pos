@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common'
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   bills,
@@ -13,16 +13,12 @@ import {
   orders,
   organizations,
   payments,
-  productSalesMetrics,
-  products,
   refunds,
-  reportSnapshots,
   staff,
   staffPerformanceMetrics,
   shifts,
   stockLevels,
   stockMovements,
-  tenantSettings,
   tips,
   customers,
   customerFeedback,
@@ -31,11 +27,15 @@ import {
 } from '@hospitality-os/database'
 
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
+import { TenantSettingsService } from '../../core/tenant/tenant-settings.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
 
 @Injectable()
 export class ReportsService {
-  constructor(@Inject(APP_POOL) private readonly pool: Pool) {}
+  constructor(
+    @Inject(APP_POOL) private readonly pool: Pool,
+    @Inject(TenantSettingsService) private readonly tenantSettings: TenantSettingsService,
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Dashboard composites
@@ -460,16 +460,11 @@ export class ReportsService {
           .select({ total: sql<number>`COALESCE(SUM(${stockMovements.unitCost} * ${stockMovements.quantity}), 0)` })
           .from(stockMovements)
           .where(and(eq(stockMovements.organizationId, authContext.organizationId), eq(stockMovements.locationId, locationId), eq(stockMovements.movementType, 'recipe_deduction'), sql`DATE(${stockMovements.movedAt}) = ${today}`)),
-        db
-          .select({ value: tenantSettings.value })
-          .from(tenantSettings)
-          .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'hourly_labor_rate')))
-          .limit(1)
-          .then((r) => r[0]),
+        this.tenantSettings.get<{ amount?: number } | null>(db, authContext.organizationId, 'hourly_labor_rate', null),
       ])
       const revenue = Number(revenueResult[0]?.revenue ?? 0)
       const staffCount = Number(activeStaff[0]?.count ?? 0)
-      const hourlyRate = (hourlyRateSetting?.value as { amount?: number })?.amount ?? 500
+      const hourlyRate = hourlyRateSetting?.amount ?? 500
       const hoursPerShift = 8
       const laborCost = staffCount * hoursPerShift * hourlyRate
       const foodCost = Number(foodCostResult[0]?.total ?? 0)
@@ -521,10 +516,7 @@ export class ReportsService {
   // ---------------------------------------------------------------------------
   async getScheduledReports(authContext: AuthContext) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const rows = await db
-        .select()
-        .from(tenantSettings)
-        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), sql`${tenantSettings.key} LIKE 'report_schedule_%'`))
+      const rows = await this.tenantSettings.listByKeyPrefix(db, authContext.organizationId, 'report_schedule_')
       return rows.map((r) => ({
         reportType: r.key.replace('report_schedule_', ''),
         cadence: (r.value as { cadence?: string })?.cadence ?? 'daily',
@@ -538,29 +530,8 @@ export class ReportsService {
       throw new BadRequestException('cadence must be one of: daily, weekly, monthly')
     }
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const existing = await db
-        .select()
-        .from(tenantSettings)
-        .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, `report_schedule_${reportType}`), sql`${tenantSettings.locationId} is null`))
-        .limit(1)
-        .then((r) => r[0])
-      if (existing) {
-        const [updated] = await db
-          .update(tenantSettings)
-          .set({ value: { cadence }, updatedAt: sql`now()` })
-          .where(eq(tenantSettings.id, existing.id))
-          .returning()
-        return { reportType, cadence, updatedAt: updated?.updatedAt ?? new Date() }
-      }
-      const [setting] = await db
-        .insert(tenantSettings)
-        .values({
-          organizationId: authContext.organizationId,
-          key: `report_schedule_${reportType}`,
-          value: { cadence },
-        })
-        .returning()
-      return { reportType, cadence, updatedAt: setting?.updatedAt ?? new Date() }
+      const { updatedAt } = await this.tenantSettings.set(db, authContext.organizationId, `report_schedule_${reportType}`, { cadence })
+      return { reportType, cadence, updatedAt }
     })
   }
 
@@ -596,12 +567,7 @@ export class ReportsService {
             .select({ total: sql<number>`COALESCE(SUM(${stockMovements.unitCost} * ${stockMovements.quantity}), 0)` })
             .from(stockMovements)
             .where(and(eq(stockMovements.organizationId, authContext.organizationId), eq(stockMovements.locationId, locationId), eq(stockMovements.movementType, 'recipe_deduction'), sql`DATE(${stockMovements.movedAt}) = ${today}`)),
-          db
-            .select({ value: tenantSettings.value })
-            .from(tenantSettings)
-            .where(and(eq(tenantSettings.organizationId, authContext.organizationId), eq(tenantSettings.key, 'hourly_labor_rate')))
-            .limit(1)
-            .then((r) => r[0]),
+          this.tenantSettings.get<{ amount?: number } | null>(db, authContext.organizationId, 'hourly_labor_rate', null),
         ])
 
       const revenue = Number(revenueRow[0]?.total ?? 0)
@@ -611,7 +577,7 @@ export class ReportsService {
       const totalDiscounts = Number(discountRow[0]?.count ?? 0)
       const discountAmount = Number(discountRow[0]?.amount ?? 0)
       const staffCount = Number(staffCountRow[0]?.count ?? 0)
-      const hourlyRate = (hourlyRateSetting?.value as { amount?: number })?.amount ?? 500
+      const hourlyRate = hourlyRateSetting?.amount ?? 500
       const laborCost = staffCount * 8 * hourlyRate
       const foodCost = Number(foodCostRow[0]?.total ?? 0)
       const avgTicket = orderCount > 0 ? Math.round(revenue / orderCount) : 0
@@ -646,5 +612,26 @@ export class ReportsService {
 
       return metrics
     })
+  }
+
+  // ---------------------------------------------------------------------------
+  // staff_performance_metrics is reports-owned — StaffReportService.performance
+  // calls this instead of querying the table directly.
+  // ---------------------------------------------------------------------------
+  async staffPerformanceReport(authContext: AuthContext, locationId: string, from: Date, to: Date) {
+    return withTenantContext(this.pool, authContext.organizationId, (db) =>
+      db
+        .select()
+        .from(staffPerformanceMetrics)
+        .where(
+          and(
+            eq(staffPerformanceMetrics.organizationId, authContext.organizationId),
+            eq(staffPerformanceMetrics.locationId, locationId),
+            gte(staffPerformanceMetrics.date, from.toISOString().split('T')[0]!),
+            lte(staffPerformanceMetrics.date, to.toISOString().split('T')[0]!),
+          ),
+        )
+        .orderBy(desc(staffPerformanceMetrics.date)),
+    )
   }
 }

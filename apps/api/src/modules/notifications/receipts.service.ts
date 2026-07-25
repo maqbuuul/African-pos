@@ -1,4 +1,5 @@
 import {
+  forwardRef,
   Inject,
   Injectable,
   NotFoundException,
@@ -27,6 +28,9 @@ import {
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
+import { OrganizationService } from '../organization/organization.service.js'
+import { OrdersService } from '../orders/orders.service.js'
+import { PaymentsService } from '../payments/payments.service.js'
 import type { SendReceiptDto } from './dto/send-receipt.dto.js'
 import type { UpdatePreferencesDto } from './dto/update-preferences.dto.js'
 
@@ -35,6 +39,13 @@ export class ReceiptsService {
   constructor(
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
+    @Inject(OrdersService) private readonly ordersService: OrdersService,
+    @Inject(OrganizationService) private readonly organizationService: OrganizationService,
+    // PaymentsModule already imports NotificationsModule (for post-payment
+    // receipt generation) — this is the reverse edge of that same genuine
+    // two-way dependency, so both sides need forwardRef, same pattern as
+    // Orders<->Restaurant's KdsService/OrdersService cycle.
+    @Inject(forwardRef(() => PaymentsService)) private readonly paymentsService: PaymentsService,
   ) {}
 
   async generate(
@@ -44,23 +55,14 @@ export class ReceiptsService {
     customerEmail?: string,
   ) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
-      const orderData = await this.loadOrder(db, authContext.organizationId, bill.orderId)
-      const locationData = await this.loadLocation(db, authContext.organizationId, bill.locationId)
-      const orgData = await this.loadOrganization(db, authContext.organizationId)
+      const bill = await this.ordersService.getBillById(db, authContext.organizationId, billId)
+      const orderData = await this.ordersService.getOrderById(db, authContext.organizationId, bill.orderId)
+      const locationData = await this.organizationService.getLocationById(db, authContext.organizationId, bill.locationId)
+      const orgData = await this.organizationService.getOrganizationForRead(db, authContext.organizationId)
 
       const receiptNumber = await this.generateReceiptNumber(db, authContext.organizationId)
 
-      const paymentsList = await db
-        .select()
-        .from(payments)
-        .where(
-          and(
-            eq(payments.billId, billId),
-            eq(payments.organizationId, authContext.organizationId),
-            eq(payments.status, 'confirmed'),
-          ),
-        )
+      const paymentsList = await this.paymentsService.listConfirmedPaymentsForBill(db, authContext.organizationId, billId)
 
       const receiptContent = this.buildReceiptContent({
         organization: orgData,
@@ -176,8 +178,8 @@ export class ReceiptsService {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const receipt = await this.loadReceipt(db, authContext.organizationId, receiptId)
 
-      const locationData = await this.loadLocation(db, authContext.organizationId, receipt.locationId)
-      const orgData = await this.loadOrganization(db, authContext.organizationId)
+      const locationData = await this.organizationService.getLocationById(db, authContext.organizationId, receipt.locationId)
+      const orgData = await this.organizationService.getOrganizationForRead(db, authContext.organizationId)
 
       const taxProvider = locationData.country === 'KE' ? 'kra_etims' : null
       if (!taxProvider) return null
@@ -323,40 +325,39 @@ export class ReceiptsService {
     return ['whatsapp', 'sms', 'email']
   }
 
-  private async loadBill(db: Db, organizationId: string, billId: string) {
-    const [bill] = await db
+  // db-first — used by SyncService.pushOperations for offline-submitted
+  // receipts' tax-compliance queuing. Distinct from submitToTaxAuthority
+  // (which does a real, synchronous 'confirmed'/'failed' submission via the
+  // tax adapter): this just records a best-effort 'queued' row when the
+  // client is offline. Returns null (rather than throwing) when the receipt
+  // isn't found, matching the caller's existing best-effort semantics.
+  async recordOfflineTaxSubmission(
+    db: Db,
+    organizationId: string,
+    receiptId: string,
+    requestPayload: Record<string, unknown>,
+  ): Promise<{ submission: typeof taxComplianceSubmissions.$inferSelect; locationId: string } | null> {
+    const [receipt] = await db
       .select()
-      .from(bills)
-      .where(and(eq(bills.id, billId), eq(bills.organizationId, organizationId)))
-    if (!bill) throw new NotFoundException({ code: 'bill_not_found', message: 'Bill not found' })
-    return bill
-  }
+      .from(receipts)
+      .where(and(eq(receipts.id, receiptId), eq(receipts.organizationId, organizationId)))
+      .limit(1)
+    if (!receipt) return null
 
-  private async loadOrder(db: Db, organizationId: string, orderId: string) {
-    const [orderData] = await db
-      .select()
-      .from(orders)
-      .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-    if (!orderData) throw new NotFoundException({ code: 'order_not_found', message: 'Order not found' })
-    return orderData
-  }
-
-  private async loadLocation(db: Db, organizationId: string, locationId: string) {
-    const [locationData] = await db
-      .select()
-      .from(locations)
-      .where(and(eq(locations.id, locationId), eq(locations.organizationId, organizationId)))
-    if (!locationData) throw new NotFoundException({ code: 'location_not_found', message: 'Location not found' })
-    return locationData
-  }
-
-  private async loadOrganization(db: Db, organizationId: string) {
-    const [orgData] = await db
-      .select()
-      .from(organizations)
-      .where(eq(organizations.id, organizationId))
-    if (!orgData) throw new NotFoundException({ code: 'org_not_found', message: 'Organization not found' })
-    return orgData
+    const [submission] = await db
+      .insert(taxComplianceSubmissions)
+      .values({
+        organizationId,
+        locationId: receipt.locationId,
+        receiptId: receipt.id,
+        country: 'KE',
+        provider: 'kra_etims',
+        submissionStatus: 'queued',
+        requestPayload,
+      })
+      .returning()
+    if (!submission) return null
+    return { submission, locationId: receipt.locationId }
   }
 
   private async loadReceipt(db: Db, organizationId: string, receiptId: string) {

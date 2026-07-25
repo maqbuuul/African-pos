@@ -4,7 +4,6 @@ import type { Pool } from 'pg'
 import {
   floorPlans,
   restaurantTables,
-  staff,
   tableMerges,
   withTenantContext,
   type Db,
@@ -12,6 +11,7 @@ import {
 import { TABLE_REOPEN_TRANSITIONS, TABLE_STATE_TRANSITIONS, type TableStatus } from '@hospitality-os/domain'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
+import { StaffService } from '../../core/staff/staff.service.js'
 import { APP_POOL } from '../../core/tenant/tenant.constants.js'
 import { PermissionsService } from '../../core/permissions/permissions.service.js'
 import type { AuthContext } from '../../core/tenant/tenant.types.js'
@@ -39,6 +39,7 @@ export class TablesService {
     @Inject(APP_POOL) private readonly pool: Pool,
     @Inject(AuditLogService) private readonly auditLog: AuditLogService,
     @Inject(PermissionsService) private readonly permissionsService: PermissionsService,
+    @Inject(StaffService) private readonly staffService: StaffService,
   ) {}
 
   async list(authContext: AuthContext, query: ListTablesQuery) {
@@ -326,8 +327,12 @@ export class TablesService {
         }
       }
 
-      const [toStaff] = await db.select().from(staff).where(eq(staff.id, dto.toStaffId))
-      if (!toStaff) throw new NotFoundException('staff member not found')
+      // staff is staff-owned. Also now scopes to the table's own location
+      // (previously unscoped by org/location) — a table's assigned server
+      // belonging to a different location than the table itself isn't a
+      // valid state, so this tightens a real gap rather than changing
+      // intended behavior.
+      await this.staffService.getActiveMember(db, authContext.organizationId, table.locationId, dto.toStaffId)
 
       const [updated] = await db
         .update(restaurantTables)
@@ -413,5 +418,52 @@ export class TablesService {
         message: `table is assigned to another staff member — missing permission: ${MANAGE_ANY_SECTION}`,
       })
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // db-first — cross-module helpers for QrOrderService, which owns no tables
+  // of its own (see qr-order.module.ts's `owns: []`). restaurant_tables is
+  // restaurant-owned.
+  // ---------------------------------------------------------------------------
+
+  // Deliberately org-less: a QR scan only has the slug, and the organization
+  // isn't known until the table is found — mirrors the pre-existing
+  // org-less withTenantContext qr-order.service.ts already opened for this.
+  async findByQrSlug(db: Db, qrSlug: string): Promise<TableRow | null> {
+    const [table] = await db.select().from(restaurantTables).where(eq(restaurantTables.qrSlug, qrSlug)).limit(1)
+    return table ?? null
+  }
+
+  async utilizationReport(authContext: AuthContext, locationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [statusBreakdown, occupancyStats] = await Promise.all([
+        db
+          .select({
+            status: restaurantTables.status,
+            section: restaurantTables.section,
+            count: sql<number>`COUNT(*)`,
+            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
+            occupiedCapacity: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
+          })
+          .from(restaurantTables)
+          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
+          .groupBy(restaurantTables.status, restaurantTables.section)
+          .orderBy(restaurantTables.status, restaurantTables.section),
+        db
+          .select({
+            section: restaurantTables.section,
+            totalTables: sql<number>`COUNT(*)`,
+            occupiedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'occupied')`,
+            availableTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'available')`,
+            reservedTables: sql<number>`COUNT(*) FILTER (WHERE ${restaurantTables.status} = 'reserved')`,
+            totalCapacity: sql<number>`SUM(${restaurantTables.capacity})`,
+            currentGuests: sql<number>`COALESCE(SUM(${restaurantTables.partySize}), 0)`,
+          })
+          .from(restaurantTables)
+          .where(and(eq(restaurantTables.organizationId, authContext.organizationId), eq(restaurantTables.locationId, locationId)))
+          .groupBy(restaurantTables.section),
+      ])
+      return { statusBreakdown, occupancyStats }
+    })
   }
 }

@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common'
-import { and, asc, desc, eq, inArray, ne } from 'drizzle-orm'
+import { and, desc, eq, inArray, ne } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   cookTimeSamples,
@@ -14,9 +14,7 @@ import {
 } from '@hospitality-os/database'
 import {
   KDS_TICKET_ITEM_STATUS_TRANSITIONS,
-  KdsStationTypeSchema,
   ORDER_ITEM_STATUS_TRANSITIONS,
-  type KdsStationType,
   type KdsTicketItemStatus,
   type OrderItemStatus,
 } from '@hospitality-os/domain'
@@ -333,7 +331,7 @@ export class KdsService {
 
       for (const item of items) {
         this.assertLegalTicketItemTransition(item.status as KdsTicketItemStatus, 'ready')
-        const orderItem = await this.loadOrderItem(db, authContext.organizationId, item.orderItemId)
+        const orderItem = await this.ordersService.getOrderItemById(db, authContext.organizationId, item.orderItemId)
         this.assertLegalOrderItemTransition(orderItem.status as OrderItemStatus, 'ready')
       }
 
@@ -648,7 +646,7 @@ export class KdsService {
 
       this.assertLegalTicketItemTransition(ticketItem.status as KdsTicketItemStatus, targetStatus)
       const orderStatusTarget = this.mapKitchenStatusToOrderItemStatus(targetStatus)
-      const orderItem = await this.loadOrderItem(db, authContext.organizationId, ticketItem.orderItemId)
+      const orderItem = await this.ordersService.getOrderItemById(db, authContext.organizationId, ticketItem.orderItemId)
       this.assertLegalOrderItemTransition(orderItem.status as OrderItemStatus, orderStatusTarget)
 
       const [updated] = await db
@@ -714,7 +712,7 @@ export class KdsService {
   // convention this file's own createTicketsForSentItems/
   // requestVoidForOrderItem already use in the other direction.
   private async syncOrderItemFromKitchen(db: Db, organizationId: string, orderItemId: string, resolvedByActorId?: string) {
-    const orderItem = await this.loadOrderItem(db, null, orderItemId)
+    const orderItem = await this.ordersService.getOrderItemByIdUnscoped(db, orderItemId)
     if (orderItem.status === 'comped' || orderItem.status === 'served') return orderItem
 
     const rows = await db.select().from(kitchenTicketItems).where(eq(kitchenTicketItems.orderItemId, orderItemId))
@@ -811,7 +809,7 @@ export class KdsService {
   async deleteStation(authContext: AuthContext, stationId: string) {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       await this.assertPermission(db, authContext, MANAGE_STATIONS_PERMISSION)
-      const existing = await this.loadStation(db, authContext.organizationId, stationId)
+      await this.loadStation(db, authContext.organizationId, stationId)
       await db.delete(kdsStations).where(eq(kdsStations.id, stationId))
     })
   }
@@ -867,14 +865,6 @@ export class KdsService {
       .from(kitchenTicketItems)
       .where(and(eq(kitchenTicketItems.id, ticketItemId), eq(kitchenTicketItems.organizationId, organizationId)))
     if (!row) throw new NotFoundException('kitchen ticket item not found')
-    return row
-  }
-
-  private async loadOrderItem(db: Db, organizationId: string | null, orderItemId: string) {
-    const conditions = [eq(orderItems.id, orderItemId)]
-    if (organizationId) conditions.push(eq(orderItems.organizationId, organizationId))
-    const [row] = await db.select().from(orderItems).where(and(...conditions))
-    if (!row) throw new NotFoundException('order item not found')
     return row
   }
 
