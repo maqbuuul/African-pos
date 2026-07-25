@@ -343,6 +343,84 @@ it's clean — fix in the order below.
       (shift close, QR order, receipt generation, offline sync, chama
       routing, scheduled reports) was not re-run this session — recommended
       before merge, per the verified-for-real standard above.
+      **Follow-up (2026-07-25, later same day):** ran the recommended
+      seeded-DB business-flow pass over live HTTP against the running API —
+      staff POS (seat table → order → send to kitchen → accept/start/bump
+      through KDS → split → pay cash → shift close), receipt generation,
+      offline sync push, chama routing setup+process, and scheduled-report
+      aggregation. Found and fixed five real bugs the module-boundary work's
+      typecheck/build/boot verification couldn't have caught (none are
+      boundary regressions — all pre-date A2, surfaced only by driving real
+      requests against a real DB):
+      - `shifts.service.ts#getVarianceThreshold` called `JSON.parse` on a
+        value `TenantSettingsService.get` already returns pre-parsed from
+        `jsonb` — every shift close 500'd (`"[object Object]" is not valid
+        JSON`) once a `cash_variance_threshold` tenant-setting row existed,
+        which the seed always creates. Fixed by reading the object
+        directly, no parse.
+      - `ShiftsService.close`'s `uncounted_drawer` pre-close check read
+        `cashDrawerSessions.countedAmount`, but that column is only ever
+        written by the same `close()` call being gated — the check could
+        never pass, forcing every close through `force=true`. Removed it;
+        `dto.countedAmount` being mandatory already covers the intent (PRD
+        08: counting the drawer and closing the shift are one action).
+      - Receipts never rendered line items — `content.items` was hardcoded
+        `[]` since the original P9 commit, and the printed-text renderer had
+        a dead blank-line placeholder where items should print. Added
+        `OrdersService.getBillItemsForReceipt` (billItems→orderItems join)
+        and wired it through both.
+      - `sync/dto/push-operations.dto.ts`'s `PushOperationsDto.operations`
+        was missing `@Type(() => PushOperationItem)` — the one `@ValidateNested`
+        array in the codebase missing it (checked all seven others). Without
+        it every `POST /api/v1/sync/push` 400'd with "an unknown value was
+        passed to the validate function". While chasing this, found
+        `ValidatedBody`'s error formatting only read `error.constraints`,
+        never `error.children` — any nested/array DTO validation failure
+        anywhere in the app came back as a bare 400 with an empty message
+        array. Fixed both (recursive `flattenConstraints` helper).
+      - `sync_operations`/`sync_conflicts`' `entity_type` CHECK constraints
+        (migration 0013, P11) were hardcoded to a singular-noun list
+        (`order`, `payment`, `tip`, `shift`, `audit_event`, ...) that never
+        matched `SyncEntityTypeSchema` in `packages/domain` (plural nouns:
+        `orders`, `payments`, `products`, `customers`, `inventory_items`,
+        ..., `etims_submission`) — the only enum application code validates
+        a push against. Every legal `entityType` value therefore violated
+        the DB constraint outright; offline sync push was 100% broken for
+        every possible input. Added migration `0022_fix_sync_entity_type_check.sql`
+        aligning both constraints to the domain enum (confirmed no code path
+        ever used the old DB-only values — they were audit-log entity-type
+        string literals in unrelated code, a naming coincidence).
+      Also fixed one unrelated pre-existing lint failure blocking
+      `pnpm lint` (`apps/manager-web/src/app/main.tsx`, unescaped apostrophe).
+      Verified: `pnpm typecheck`/`build`/`check:boundaries` clean across the
+      monorepo after fixes; re-ran shift close (zero variance) and receipt
+      generation live against the API and confirmed both fixes hold.
+      **Found but deliberately not fixed** (large, pre-existing, and
+      explicitly out of scope for this pass — same judgment call as the
+      qr-order rework above):
+      - QR ordering is more broken than previously documented. Not just
+        "orders never leave `draft`" — `OrdersService.createDraftOrderWithItems`
+        never links order items to their bill (no `billItems` rows) and
+        never calls `recomputeOrderTotals`, so the bill's `subtotalAmount`/
+        `totalAmount` stay `0` forever. `requestBillInTx` (called by the QR
+        customer's "request bill" step) hard-throws `invalid_status_transition`
+        for any order stuck in `draft` — since `ORDER_STATUS_TRANSITIONS`
+        never allows `draft → bill_requested` and nothing ever moves a QR
+        order to `open` first, a QR customer can order food but can never
+        successfully request the bill. This is a structurally incomplete
+        payment path, not a one-line fix, and touches billing/totals
+        calculations with zero test coverage backing it — recommend its own
+        dedicated ticket rather than a drive-by fix here.
+      - `apps/customer-web` has 24 pre-existing `@typescript-eslint/no-explicit-any`
+        lint errors (untouched since the same 4bf1d70 commit as the
+        manager-web fix above) — `pnpm lint` still fails on this package.
+        Real fixes need per-call-site type investigation; left as-is rather
+        than mass-changing types without test coverage to catch mistakes.
+      - Realtime P&L's `laborCost` (`reports.service.ts`) assumes every
+        active staff member worked a full 8h shift at a flat default rate —
+        it doesn't read actual clock-in/attendance data despite P12 Staff
+        Attendance existing. Working as coded, just a known simplification;
+        not touched.
 - [x] **A3 — Add dependency-vulnerability and secret-scanning jobs to CI**
       Done 2026-07-24 — new `security` job in `.github/workflows/ci.yml`:
       `pnpm audit --audit-level=high` (moderate/low findings are common

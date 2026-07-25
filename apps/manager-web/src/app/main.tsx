@@ -29,7 +29,7 @@ function App() {
             <p style={cardValue}>0</p>
           </article>
           <article style={card}>
-            <p style={cardLabel}>Today's Revenue</p>
+            <p style={cardLabel}>Today&apos;s Revenue</p>
             <p style={cardValue}>KES 0</p>
           </article>
           <article style={card}>

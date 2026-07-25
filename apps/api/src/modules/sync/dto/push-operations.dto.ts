@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer'
 import { IsArray, IsIn, IsObject, IsOptional, IsString, IsUUID, Min, ValidateNested } from 'class-validator'
 import type { SyncEntityType, SyncOperationType } from '@hospitality-os/domain'
 import { SyncEntityTypeSchema, SyncOperationTypeSchema } from '@hospitality-os/domain'
@@ -45,5 +46,6 @@ class PushOperationItem {
 export class PushOperationsDto {
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => PushOperationItem)
   operations!: PushOperationItem[]
 }

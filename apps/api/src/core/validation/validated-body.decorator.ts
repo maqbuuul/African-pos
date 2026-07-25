@@ -1,6 +1,18 @@
 import { BadRequestException, Body, type PipeTransform } from '@nestjs/common'
 import { plainToInstance } from 'class-transformer'
-import { validate } from 'class-validator'
+import { validate, type ValidationError } from 'class-validator'
+
+// error.constraints only holds messages for the property the error object
+// itself is attached to — a failure nested under @ValidateNested (an array
+// item or a nested DTO) reports through error.children instead, with its own
+// (possibly empty) constraints. A flat `errors.map(e => e.constraints)` misses
+// those entirely, so a nested validation failure came back as a bare 400 with
+// no message at all (found while sync-testing offline push operations).
+const flattenConstraints = (errors: ValidationError[]): string[] =>
+  errors.flatMap((error) => [
+    ...Object.values(error.constraints ?? {}),
+    ...flattenConstraints(error.children ?? []),
+  ])
 
 // Nest's global ValidationPipe (main.ts) decides which DTO class to validate
 // a @Body() against by reading `design:paramtypes` reflection metadata off
@@ -24,7 +36,7 @@ class ExplicitClassValidationPipe<T extends object> implements PipeTransform {
     const instance = plainToInstance(this.dtoClass, value ?? {})
     const errors = await validate(instance as object, { whitelist: true })
     if (errors.length > 0) {
-      throw new BadRequestException(errors.flatMap((error) => Object.values(error.constraints ?? {})))
+      throw new BadRequestException(flattenConstraints(errors))
     }
     return instance
   }

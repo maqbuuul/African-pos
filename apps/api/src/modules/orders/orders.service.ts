@@ -680,6 +680,32 @@ export class OrdersService {
       .where(and(eq(billItems.billId, billId), eq(billItems.organizationId, organizationId)))
   }
 
+  // billItems -> orderItems join for ReceiptsService's line-item rendering
+  // (billItems/orderItems are orders-owned). allocatedAmount is this bill's
+  // share of the item's total — equal to the full item total in the common
+  // unsplit case, a fraction of it when the item was split across bills.
+  async getBillItemsForReceipt(
+    db: Db,
+    organizationId: string,
+    billId: string,
+  ): Promise<{ name: string; quantity: number; unitPrice: number; totalPrice: number }[]> {
+    const rows = await db
+      .select({
+        nameSnapshot: orderItems.nameSnapshot,
+        quantity: orderItems.quantity,
+        allocatedAmount: billItems.allocatedAmount,
+      })
+      .from(billItems)
+      .innerJoin(orderItems, eq(billItems.orderItemId, orderItems.id))
+      .where(and(eq(billItems.billId, billId), eq(billItems.organizationId, organizationId)))
+    return rows.map((row) => ({
+      name: row.nameSnapshot,
+      quantity: row.quantity,
+      unitPrice: row.quantity > 0 ? Math.round(row.allocatedAmount / row.quantity) : row.allocatedAmount,
+      totalPrice: row.allocatedAmount,
+    }))
+  }
+
   // ---------------------------------------------------------------------------
   // db-first: called from KdsService's own transaction (kitchen-initiated
   // actions — bump/recall/void-acknowledge — hit KdsController directly,

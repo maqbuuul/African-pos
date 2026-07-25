@@ -143,17 +143,14 @@ export class ShiftsService {
         const hasPendingPayments = await this.paymentsService.hasPendingPaymentIntents(db, authContext.organizationId, shift.locationId)
         if (hasPendingPayments) blocking.push('pending_payments')
 
-        const [session] = await db
-          .select()
-          .from(cashDrawerSessions)
-          .where(
-            and(
-              eq(cashDrawerSessions.shiftId, shiftId),
-              eq(cashDrawerSessions.organizationId, authContext.organizationId),
-            ),
-          )
-        if (session && session.countedAmount === null) blocking.push('uncounted_drawer')
-
+        // No 'uncounted_drawer' check here: per PRD 08, counting the drawer
+        // and closing the shift are the same action (dto.countedAmount below
+        // is mandatory) — there's no separate pre-close "count" step whose
+        // absence this could detect. A check against cashDrawerSessions.countedAmount
+        // was here previously, but that column is only ever written by this
+        // same close() call, so it was always null at this point and the
+        // check could never pass without force=true (found by actually
+        // closing a shift end-to-end).
         const hasUnsynced = await this.syncService.hasPendingSyncOperations(db, authContext.organizationId)
         if (hasUnsynced) blocking.push('unsynced_events')
 
@@ -652,14 +649,13 @@ export class ShiftsService {
     organizationId: string,
     locationId: string,
   ): Promise<number> {
-    const raw = await this.tenantSettings.get<string>(
+    const raw = await this.tenantSettings.get<{ amount?: number; currency?: string } | null>(
       db,
       organizationId,
       VARIANCE_THRESHOLD_KEY,
-      '{"amount":500,"currency":"KES"}',
+      { amount: 500, currency: 'KES' },
       locationId,
     )
-    const parsed = JSON.parse(raw) as { amount?: number }
-    return parsed?.amount ?? 500
+    return raw?.amount ?? 500
   }
 }

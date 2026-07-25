@@ -63,6 +63,7 @@ export class ReceiptsService {
       const receiptNumber = await this.generateReceiptNumber(db, authContext.organizationId)
 
       const paymentsList = await this.paymentsService.listConfirmedPaymentsForBill(db, authContext.organizationId, billId)
+      const billItemsList = await this.ordersService.getBillItemsForReceipt(db, authContext.organizationId, billId)
 
       const receiptContent = this.buildReceiptContent({
         organization: orgData,
@@ -70,6 +71,7 @@ export class ReceiptsService {
         order: orderData,
         bill,
         payments: paymentsList,
+        items: billItemsList,
         receiptNumber,
       }) as unknown as Record<string, unknown>
 
@@ -384,6 +386,7 @@ export class ReceiptsService {
     order: typeof orders.$inferSelect
     bill: typeof bills.$inferSelect
     payments: (typeof payments.$inferSelect)[]
+    items: { name: string; quantity: number; unitPrice: number; totalPrice: number }[]
     receiptNumber: string
   }): ReceiptRenderInput {
     return {
@@ -394,7 +397,7 @@ export class ReceiptsService {
       receiptNumber: data.receiptNumber,
       orderNumber: data.order.id.slice(0, 8),
       staffName: undefined,
-      items: [],
+      items: data.items,
       subtotalAmount: data.bill.subtotalAmount,
       discountAmount: data.bill.discountAmount,
       taxAmount: data.bill.taxAmount,
@@ -421,7 +424,10 @@ export class ReceiptsService {
     if (input.kraPin) lines.push(`KRA PIN: ${input.kraPin}`)
     if (input.etrSerial) lines.push(`ETR: ${input.etrSerial}`)
     lines.push('-'.repeat(40))
-    lines.push('')
+    for (const item of input.items) {
+      lines.push(`${item.quantity}x ${item.name}`)
+      lines.push(`    ${(item.unitPrice / 100).toFixed(2)} x ${item.quantity} = ${(item.totalPrice / 100).toFixed(2)} ${input.currency}`)
+    }
     lines.push('---')
     lines.push(`Subtotal:    ${(input.subtotalAmount / 100).toFixed(2)} ${input.currency}`)
     if (input.discountAmount > 0) lines.push(`Discount:    -${(input.discountAmount / 100).toFixed(2)} ${input.currency}`)
