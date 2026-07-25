@@ -54,91 +54,91 @@
     {
       "idx": 7,
       "version": "7",
-      "when": 1784900000000,
+      "when": 1784753468955,
       "tag": "0007_p7_payments_core",
       "breakpoints": true
     },
     {
       "idx": 8,
       "version": "7",
-      "when": 1785000000000,
+      "when": 1784765528255,
       "tag": "0008_p8_shift_cash_drawer",
       "breakpoints": true
     },
     {
       "idx": 9,
       "version": "7",
-      "when": 1785100000000,
+      "when": 1784777587555,
       "tag": "0009_p9_receipts",
       "breakpoints": true
     },
     {
       "idx": 10,
       "version": "7",
-      "when": 1785200000000,
+      "when": 1784789646855,
       "tag": "0010_p10_qr_ordering",
       "breakpoints": true
     },
     {
       "idx": 11,
       "version": "7",
-      "when": 1785300000000,
+      "when": 1784801706155,
       "tag": "0011_p10_public_table_select",
       "breakpoints": true
     },
     {
       "idx": 12,
       "version": "7",
-      "when": 1785350000000,
+      "when": 1784813765455,
       "tag": "0012_p10_staff_notifications_feedback",
       "breakpoints": true
     },
     {
       "idx": 13,
       "version": "7",
-      "when": 1785400000000,
+      "when": 1784825824755,
       "tag": "0013_p11_offline_sync",
       "breakpoints": true
     },
     {
       "idx": 14,
       "version": "7",
-      "when": 1785500000000,
+      "when": 1784837884055,
       "tag": "0014_p13_crm_loyalty",
       "breakpoints": true
     },
     {
       "idx": 15,
       "version": "7",
-      "when": 1785600000000,
+      "when": 1784849943355,
       "tag": "0015_p14_reports_bi",
       "breakpoints": true
     },
     {
       "idx": 16,
       "version": "7",
-      "when": 1785700000000,
+      "when": 1784862002655,
       "tag": "0016_p12_inventory",
       "breakpoints": true
     },
     {
       "idx": 17,
       "version": "7",
-      "when": 1785800000000,
+      "when": 1784874061955,
       "tag": "0017_p12_stock_levels_projection",
       "breakpoints": true
     },
     {
       "idx": 18,
       "version": "7",
-      "when": 1785900000000,
+      "when": 1784886121255,
       "tag": "0018_p12_staff_attendance",
       "breakpoints": true
     },
     {
       "idx": 19,
       "version": "7",
-      "when": 1786000000000,
+      "when": 1784898180555,
       "tag": "0019_p13_fix_credit_risk",
       "breakpoints": true
     },
@@ -196,6 +196,13 @@
       "version": "7",
       "when": 1784997500000,
       "tag": "0027_fix_sync_conflicts_resolution_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785005000000,
+      "tag": "0028_p14_reports_bi_rls",
       "breakpoints": true
     }
   ]
