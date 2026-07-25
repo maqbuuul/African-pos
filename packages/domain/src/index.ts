@@ -46,8 +46,8 @@ export const PaymentProviderSchema = z.enum([
   'mpesa_daraja',  // Safaricom Daraja API (STK push, direct per-tenant)
   'paystack',      // Paystack (card, bank transfer/Pesalink, mobile money)
   'airtel_money_api',
-  'stripe',
   'flutterwave',
+  'pesapal',       // PesaPal (East Africa — card, mobile money, bank via one checkout)
   'manual',        // recorded after the fact, reference number only
   'uber_eats',
   'glovo',
@@ -91,6 +91,14 @@ export const RefundStatusSchema = z.enum([
   'requires_manual_settlement', // provider reversal failed/expired, manual action needed
 ])
 export type RefundStatus = z.infer<typeof RefundStatusSchema>
+
+// M-Pesa C2B (Paybill/Till manual payment, distinct from STK Push): a
+// customer-initiated payment arrives with no payment_intent to match against
+// (unlike every other payment path in this codebase). 'unmatched' until
+// either an exact bill/order-id reference match is found automatically, or
+// staff reconcile it by hand against an open bill.
+export const MpesaC2bTransactionStatusSchema = z.enum(['unmatched', 'matched', 'ignored'])
+export type MpesaC2bTransactionStatus = z.infer<typeof MpesaC2bTransactionStatusSchema>
 
 // Integration connection categories — matches packages/integrations categories.
 export const IntegrationCategorySchema = z.enum([
@@ -362,7 +370,10 @@ const ORDER_VOIDABLE_PRE_PAYMENT: readonly OrderStatus[] = [
 // `bill_requested` from any of these — a narrower, honestly-scoped path, not
 // the full "every item served" aggregation P6 will eventually enable.
 export const ORDER_STATUS_TRANSITIONS: Readonly<Record<OrderStatus, readonly OrderStatus[]>> = {
-  draft: ['open', 'voided'],
+  // 'sent_to_kitchen' direct from 'draft' is the QR-ordering path: a QR cart
+  // (order.channel = 'qr_table') never passes through 'open' — sendCourse()
+  // fires items straight from draft, matching its own fromStatus handling.
+  draft: ['open', 'sent_to_kitchen', 'voided'],
   open: ['sent_to_kitchen', 'voided'],
   sent_to_kitchen: ['partially_ready', 'ready', 'served', 'bill_requested', 'voided'],
   partially_ready: ['sent_to_kitchen', 'ready', 'served', 'bill_requested', 'voided'],

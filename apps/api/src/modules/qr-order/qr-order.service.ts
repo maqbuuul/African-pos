@@ -159,7 +159,7 @@ export class QrOrderService {
     if (outstandingAmount <= 0) {
       throw new BadRequestException('bill has no outstanding balance to pay')
     }
-    return this.paymentsService.takeMpesa(authContext, bill.id, {
+    return this.paymentsService.takePayment(authContext, bill.id, 'mpesa_daraja', {
       amount: outstandingAmount, currency, idempotencyKey, customerPhone,
     })
   }

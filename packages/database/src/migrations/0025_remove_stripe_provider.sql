@@ -1,0 +1,6 @@
+ALTER TABLE "payment_intents" DROP CONSTRAINT "payment_intents_provider_check";--> statement-breakpoint
+ALTER TABLE "payments" DROP CONSTRAINT "payments_provider_check";--> statement-breakpoint
+ALTER TABLE "refunds" DROP CONSTRAINT "refunds_provider_check";--> statement-breakpoint
+ALTER TABLE "payment_intents" ADD CONSTRAINT "payment_intents_provider_check" CHECK ("payment_intents"."provider" in ('none', 'mpesa_daraja', 'paystack', 'airtel_money_api', 'flutterwave', 'pesapal', 'manual', 'uber_eats', 'glovo', 'bolt_food'));--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_provider_check" CHECK ("payments"."provider" in ('none', 'mpesa_daraja', 'paystack', 'airtel_money_api', 'flutterwave', 'pesapal', 'manual', 'uber_eats', 'glovo', 'bolt_food'));--> statement-breakpoint
+ALTER TABLE "refunds" ADD CONSTRAINT "refunds_provider_check" CHECK ("refunds"."provider" in ('none', 'mpesa_daraja', 'paystack', 'airtel_money_api', 'flutterwave', 'pesapal', 'manual', 'uber_eats', 'glovo', 'bolt_food'));

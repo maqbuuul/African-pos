@@ -17,6 +17,7 @@ import {
   LoyaltyEventTypeSchema,
   LoyaltyTierSchema,
   ModifierStatusSchema,
+  MpesaC2bTransactionStatusSchema,
   NotificationSubjectTypeSchema,
   OrderChannelSchema,
   OrderItemStatusSchema,
@@ -920,6 +921,58 @@ export const tips = pgTable('tips', {
   index('tips_staff_id_idx').on(table.staffId),
   check('tips_amount_check', sql`${table.amount} > 0`),
   check('tips_currency_len_check', sql`char_length(${table.currency}) = 3`),
+])
+
+// M-Pesa C2B (Paybill/Till manual payment — customer dials the M-Pesa menu
+// themselves, no STK push). Distinct staging table because a C2B payment
+// arrives with no payment_intent to match against, unlike every other
+// payment path: M-Pesa calls the Confirmation URL after the money has
+// already settled, so this table is the landing zone, not a request/response
+// pair. billRefNumber is customer-typed free text (Paybill only — Till
+// carries no reference field at all), so most rows start 'unmatched' and
+// need staff reconciliation against an open bill; a real `payments` row
+// (and bill settlement) is only created once matched.
+export const mpesaC2bTransactions = pgTable('mpesa_c2b_transactions', {
+  ...primaryId,
+  organizationId: uuid('organization_id')
+    .notNull()
+    .references(() => organizations.id, { onDelete: 'restrict' }),
+  // Nullable, unlike every other payment table: the incoming C2B payload
+  // carries no location, only a shortcode against an org-scoped webhook URL.
+  // Resolved transitively once matched to a bill (bills always have a
+  // location) — see PaymentsService.matchC2bTransaction.
+  locationId: uuid('location_id').references(() => locations.id, { onDelete: 'restrict' }),
+  transType: text('trans_type').notNull(), // Safaricom's TransactionType: "Pay Bill" | "Buy Goods"
+  transId: text('trans_id').notNull(), // Safaricom's unique C2B receipt number
+  transTime: timestamp('trans_time', { withTimezone: true }).notNull(),
+  transAmount: integer('trans_amount').notNull(),
+  currency: text('currency').notNull().default('KES'),
+  businessShortCode: text('business_short_code').notNull(),
+  billRefNumber: text('bill_ref_number'),
+  invoiceNumber: text('invoice_number'),
+  orgAccountBalance: text('org_account_balance'),
+  msisdn: text('msisdn').notNull(),
+  firstName: text('first_name'),
+  middleName: text('middle_name'),
+  lastName: text('last_name'),
+  status: text('status').notNull().default('unmatched'),
+  matchedBillId: uuid('matched_bill_id').references(() => bills.id, { onDelete: 'set null' }),
+  matchedPaymentId: uuid('matched_payment_id').references(() => payments.id, { onDelete: 'set null' }),
+  matchedByActorId: uuid('matched_by_actor_id'),
+  matchedAt: timestamp('matched_at', { withTimezone: true }),
+  rawPayload: jsonb('raw_payload'),
+  ...timestamps,
+}, (table) => [
+  index('mpesa_c2b_transactions_organization_id_idx').on(table.organizationId),
+  index('mpesa_c2b_transactions_location_id_idx').on(table.locationId),
+  index('mpesa_c2b_transactions_status_idx').on(table.status),
+  index('mpesa_c2b_transactions_matched_bill_id_idx').on(table.matchedBillId),
+  // Safaricom TransIDs are globally unique, but scope to org anyway to match
+  // this codebase's standing tenant-isolation convention for unique keys.
+  unique('mpesa_c2b_transactions_org_trans_id_key').on(table.organizationId, table.transId),
+  check('mpesa_c2b_transactions_trans_amount_check', sql`${table.transAmount} > 0`),
+  check('mpesa_c2b_transactions_currency_len_check', sql`char_length(${table.currency}) = 3`),
+  check('mpesa_c2b_transactions_status_check', enumCheck(table.status, MpesaC2bTransactionStatusSchema.options)),
 ])
 
 // ---------------------------------------------------------------------------

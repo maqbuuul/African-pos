@@ -31,10 +31,13 @@
       "WebFetch(domain:www.capterra.com)",
       "Bash(docker compose *)",
       "Bash(grep -E \"^\\\\s+\\\\w+,?$|^import\")",
-      "Bash(mkdir -p \"/tmp/claude-1000/-home-maqbuul-Documents-African-pos/9a37cf35-4146-4524-96cb-5634ecdbf966/scratchpad\")"
+      "Bash(mkdir -p \"/tmp/claude-1000/-home-maqbuul-Documents-African-pos/9a37cf35-4146-4524-96cb-5634ecdbf966/scratchpad\")",
+      "Bash(git log *)",
+      "Bash(mkdir -p /home/maqbuul/.claude/plans)"
     ],
     "additionalDirectories": [
-      "/home/maqbuul/Documents/African-pos"
+      "/home/maqbuul/Documents/African-pos",
+      "/home/maqbuul/.claude/plans"
     ]
   }
 }

@@ -13,7 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "db:seed": "tsx --env-file=../../.env src/seed/index.ts"
+    "db:seed": "tsx --env-file=../../.env src/seed/index.ts",
+    "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
     "@hospitality-os/domain": "workspace:*",
@@ -25,6 +26,7 @@
     "@types/pg": "^8.11.11",
     "drizzle-kit": "^0.30.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
   }
 }

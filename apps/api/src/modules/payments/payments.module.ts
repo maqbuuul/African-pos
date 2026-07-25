@@ -12,7 +12,7 @@ import { PaymentsService } from './payments.service.js'
 export const paymentsModule = {
   name: 'payments',
   phase: 'restaurant-mvp',
-  owns: ['payment_intents', 'payments', 'refunds', 'tips', 'integration_connections'],
+  owns: ['payment_intents', 'payments', 'refunds', 'tips', 'integration_connections', 'mpesa_c2b_transactions'],
 } as const
 
 // Payments -> Orders has no direct service-level cycle (Orders never needs

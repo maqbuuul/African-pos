@@ -38,6 +38,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "@nestjs/testing": "^10.4.15",
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/node": "^22.10.7",

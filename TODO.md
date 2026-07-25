@@ -67,95 +67,59 @@ it's clean — fix in the order below.
 
 ### Build-breaking (`pnpm typecheck` currently fails on all of these)
 
-- [ ] **F1 — Fix missing `APP_INTERCEPTOR` import**
-      `apps/api/src/app.module.ts:32` uses `APP_INTERCEPTOR` but only
-      imports `APP_GUARD` from `@nestjs/core`. App cannot boot as-is.
-      _Effort: Trivial_
-- [ ] **F2 — Fix undefined `customers`/`loyaltyAccounts` refs**
-      `apps/api/src/modules/qr-order/qr-order.service.ts:407-430`
-      (`captureLoyalty()`) references tables never imported from
-      `@hospitality-os/database`.
-      _Effort: Small_
-- [ ] **F3 — Fix `GiftCardStatus` undefined**
-      `apps/api/src/modules/crm/crm.service.ts:319`.
-      _Effort: Small_
-- [ ] **F4 — Fix `tenant_settings` insert/query type errors**
-      `crm.service.ts:530,537` — `.where()` doesn't exist on the insert
-      builder; iterator error on a nullable result.
-      _Effort: Small_
-- [ ] **F5 — Fix `Cannot find name 'session'` (4 occurrences)**
-      `apps/api/src/modules/finance/shifts.service.ts:264,270,289` —
-      likely a renamed/removed local variable.
-      _Effort: Small_
-- [ ] **F6 — Fix `currency` property missing on price-history type**
-      `apps/api/src/modules/inventory/inventory.service.ts:546`.
-      _Effort: Small_
-- [ ] **F7 — Fix `PaymentLinkClaims` missing `tokenType`**
-      `apps/api/src/modules/payments/payments.service.ts:1059`.
-      _Effort: Small_
-- [ ] **F8 — Fix `AuthContext` type mismatch for customer actor**
-      `apps/api/src/modules/qr-order/qr-order.service.ts:273` —
-      `actorType: 'customer'` not assignable to `ActorType`.
-      _Effort: Small_
-- [ ] **F9 — Fix `ThrottleException` — no such export in `@nestjs/common`**
-      `apps/api/src/modules/qr-order/token-rate.guard.ts:1`.
-      _Effort: Trivial_
-- [ ] **F10 — Fix `ReportsService` missing methods called by controller**
-      `apps/api/src/modules/reports/reports.controller.ts:56,62,68,141`
-      calls `ownerDashboard`/`managerDashboard`/`kitchenDashboard`/
-      `runDailyAggregation`, none of which exist on `ReportsService`
-      (only `homeDashboard` does) — controller and service are out of
-      sync.
-      _Effort: Medium_
-- [ ] **F11 — Fix `createdAt` missing on `tenant_settings` read type**
-      `apps/api/src/modules/reports/reports.service.ts:453,475,485`.
-      _Effort: Small_
-- [ ] **F12 — Fix `etims_submission` type comparison**
-      `apps/api/src/modules/sync/sync.service.ts:52` — compares against
-      a union that doesn't include `etims_submission`.
-      _Effort: Small_
-- [ ] **F13 — Verify clean typecheck, then make it a real gate**
-      Confirm `pnpm --filter @hospitality-os/api exec tsc --noEmit -p .`
-      returns clean before merging any of the above, then treat
-      `pnpm typecheck` as a hard pre-merge gate going forward, not just
-      a script that exists.
-      _Effort: Trivial_
+**Correction (2026-07-25): all of F1-F13 were already fixed by the time of
+this pass — the checkboxes just never got ticked. Re-verified by grepping
+every cited line/symbol and running
+`pnpm --filter @hospitality-os/api exec tsc --noEmit -p .` clean.**
+
+- [x] **F1 — Fix missing `APP_INTERCEPTOR` import** — `app.module.ts:4`
+      imports both `APP_GUARD` and `APP_INTERCEPTOR` from `@nestjs/core`.
+- [x] **F2 — Fix undefined `customers`/`loyaltyAccounts` refs** — no
+      unimported-table references remain in `qr-order.service.ts`.
+- [x] **F3 — Fix `GiftCardStatus` undefined** — properly imported from
+      `@hospitality-os/domain` in `crm.service.ts:16`.
+- [x] **F4 — Fix `tenant_settings` insert/query type errors** — no
+      `.where()`-on-insert or bad-iterator errors remain in `crm.service.ts`.
+- [x] **F5 — Fix `Cannot find name 'session'`** — `session` is a properly
+      declared `const` at every cited call site in `shifts.service.ts`.
+- [x] **F6 — Fix `currency` property missing on price-history type** —
+      present and typed throughout `inventory.service.ts`.
+- [x] **F7 — Fix `PaymentLinkClaims` missing `tokenType`** — set at
+      `payments.service.ts:1090`.
+- [x] **F8 — Fix `AuthContext` type mismatch for customer actor** —
+      `actorType: 'customer'` is a valid `ActorType` value, used
+      throughout `qr-order.service.ts`.
+- [x] **F9 — Fix `ThrottleException` non-export** — no reference to it
+      remains in `token-rate.guard.ts`.
+- [x] **F10 — Fix `ReportsService` missing methods** — `ownerDashboard`,
+      `managerDashboard`, `kitchenDashboard`, `runDailyAggregation` all
+      exist on `ReportsService` and match the controller's calls.
+- [x] **F11 — Fix `createdAt` missing on `tenant_settings` read type** —
+      resolved; used correctly throughout `reports.service.ts`.
+- [x] **F12 — Fix `etims_submission` type comparison** — included in the
+      union compared against in `sync.service.ts:52,390`.
+- [x] **F13 — Verify clean typecheck, make it a real gate** — confirmed
+      clean 2026-07-25; CI runs `pnpm typecheck` as a blocking step.
 
 ### Critical security/correctness bugs
 
-- [ ] **S1 — Fix M-Pesa self-checkout hardcoded `amount: 0`**
-      `apps/api/src/modules/qr-order/qr-order.service.ts:329-332`
-      (`payMpesa()`) must compute the bill's outstanding balance
-      server-side instead of passing `amount: 0`, which also bypasses
-      `TakeMpesaPaymentDto`'s `@Min(1)` since it's a direct service call
-      that skips the controller.
-      _Effort: Small_
-- [ ] **S2 — Fix `@Body()` validation-bypass regression in `crm.controller.ts`**
-      Lines 20 (`CreateCustomerDto`), 72 (`CreateLoyaltyAccountDto`), 126
-      (`CreateCreditAccountDto`) use bare `@Body()` instead of
-      `@ValidatedBody()`, silently skipping class-validator (see
-      standing rule on this exact bug class).
-      _Effort: Trivial_
-- [ ] **S3 — Add DTOs + `@ValidatedBody` to all unvalidated money/points fields**
-      Bare `@Body(key)` extraction with no DTO at all in
-      `qr-order.controller.ts`, `sync.controller.ts:76,84`,
-      `reports.controller.ts:130,154`, `kds.controller.ts:93,147`,
-      `crm.controller.ts` (`addTag`, `mergeCustomers`,
-      `redeemLoyaltyPoints`, `redeemGiftCard`, `chargeCreditAccount`,
-      `settleCreditAccount`, `setupChamaRouting`),
-      `core/staff/attendance.controller.ts:27`, `menus.controller.ts:33`.
-      _Effort: Medium_
-- [ ] **S4 — Add rate-limit guards to remaining public QR/order/payment routes**
-      `TokenRateGuard` only covers 2 of 13 customer-facing routes
-      (`refreshMenu`, `getOrderStatus`) — add it (or equivalent) to
-      `submitOrder`, `payMpesa`, `requestBill`, `payWithWaiter`,
-      `captureLoyalty`, `requestWaiter`, `submitFeedback`, `rateDish`,
-      `fireCourse`, and `createSession` itself.
-      _Effort: Small_
-- [ ] **S5 — Replace `TokenRateGuard`'s in-memory `Map` with Redis-backed limiting**
-      Current implementation has no eviction (unbounded memory growth)
-      and doesn't work once the API runs more than one instance.
-      _Effort: Medium_
+**Correction (2026-07-25): S1-S5 were also already fixed — re-verified
+against the current code, not re-litigated.**
+
+- [x] **S1 — Fix M-Pesa self-checkout hardcoded `amount: 0`** —
+      `payMpesa()` now calls `paymentsService.getOutstandingBalance()` and
+      throws `BadRequestException` if there's nothing owed, instead of
+      passing a hardcoded amount.
+- [x] **S2 — Fix `@Body()` validation-bypass in `crm.controller.ts`** — no
+      bare `@Body()` calls remain; all routes use `@ValidatedBody()`.
+- [x] **S3 — Add DTOs + `@ValidatedBody` to unvalidated money/points
+      fields** — no bare `@Body(key)` extraction without a DTO remains in
+      any of the previously-cited controllers.
+- [x] **S4 — Add rate-limit guards to remaining public QR routes** —
+      `TokenRateGuard` is applied 13 times in `qr-order.controller.ts`,
+      covering all customer-facing routes.
+- [x] **S5 — Replace `TokenRateGuard`'s in-memory `Map` with Redis** —
+      now backed by `ioredis`, shared across API instances.
 
 ### Data/migration integrity
 
@@ -395,22 +359,53 @@ it's clean — fix in the order below.
       Verified: `pnpm typecheck`/`build`/`check:boundaries` clean across the
       monorepo after fixes; re-ran shift close (zero variance) and receipt
       generation live against the API and confirmed both fixes hold.
-      **Found but deliberately not fixed** (large, pre-existing, and
-      explicitly out of scope for this pass — same judgment call as the
-      qr-order rework above):
-      - QR ordering is more broken than previously documented. Not just
-        "orders never leave `draft`" — `OrdersService.createDraftOrderWithItems`
-        never links order items to their bill (no `billItems` rows) and
-        never calls `recomputeOrderTotals`, so the bill's `subtotalAmount`/
-        `totalAmount` stay `0` forever. `requestBillInTx` (called by the QR
-        customer's "request bill" step) hard-throws `invalid_status_transition`
-        for any order stuck in `draft` — since `ORDER_STATUS_TRANSITIONS`
-        never allows `draft → bill_requested` and nothing ever moves a QR
-        order to `open` first, a QR customer can order food but can never
-        successfully request the bill. This is a structurally incomplete
-        payment path, not a one-line fix, and touches billing/totals
-        calculations with zero test coverage backing it — recommend its own
-        dedicated ticket rather than a drive-by fix here.
+      **Found but deliberately not fixed at the time** (large, pre-existing,
+      out of scope for A2's pass) — **fixed 2026-07-25, in a dedicated pass**:
+      - QR ordering's payment path is fixed end-to-end. Four cooperating bugs,
+        all in `apps/api/src/modules/orders/orders.service.ts` unless noted:
+        1. `createDraftOrderWithItems` created an eager `open` bill with every
+           amount hardcoded to `0` and never linked `billItems` — removed;
+           bill creation is now solely `requestBillInTx`'s job (matching its
+           own pre-existing doc comment), and `recomputeOrderTotals` now runs
+           right after item insertion so `order.totalAmount` is correct
+           immediately (customer cart view), well before any bill exists.
+        2. `packages/domain/src/index.ts`'s `ORDER_STATUS_TRANSITIONS.draft`
+           didn't include `sent_to_kitchen`, even though `sendCourse` (the
+           QR-ordering equivalent of `send()`) already had a
+           `fromStatus === 'draft'` branch written for exactly this case —
+           the domain enum just didn't permit it, so the branch was silently
+           dead code and QR orders could never leave `draft`. Added
+           `sent_to_kitchen` to `draft`'s allowed transitions.
+        3. `sendCourse` filtered items by `orderItems.course` — the
+           staff-POS/KDS kitchen-display field, set only via
+           `AddOrderItemDto`, never exposed to QR customers. QR ordering's
+           actual per-item field is `sessionLabel` (added by
+           `0020_reconcile_schema_drift.sql` specifically "for fire-course
+           support" per its own comment) — `sendCourse` was still querying
+           the wrong column, so no QR-submitted item could ever match any
+           `courseName` and `fireCourse` always 400'd with `no_items_for_course`.
+           Fixed to filter on `sessionLabel`.
+        4. `requestBillInTx` only populated a bill's totals in its
+           bill-didn't-exist-yet branch — dead code once bug 1's eager bill
+           always pre-existed. Rewrote: new helper
+           `linkUnbilledItemsAndRecomputeBillTotals` inserts a `billItems`
+           row (join, not copy — `allocatedAmount = totalAmount - discountAmount`,
+           matching the existing pattern in `addItem`/`split`) for every
+           non-voided order item not yet linked to any bill on the order,
+           then recomputes the bill's `subtotalAmount`/`totalAmount` from
+           what's actually linked. Idempotent by construction (checks
+           existing links first), called whether the bill is new or existing.
+        Verified for real, not just typecheck: booted the API against the
+        seeded dev DB, drove the full flow over HTTP (create table session →
+        submit order → fire course → request bill), and confirmed via direct
+        DB query that the bill lands with correct `subtotal_amount`/
+        `total_amount` (2400, matching 2× a 1200 item) and exactly one
+        correctly-linked `bill_items` row — then confirmed the QR M-Pesa
+        payment endpoint gets *past* the old `outstandingAmount <= 0` hard
+        failure (now correctly computes 2400 owed) and only stops at
+        `integration_not_configured`, an unrelated seed-data gap (this test
+        org has no M-Pesa credentials), not a code bug. Test data cleaned up
+        from the dev DB afterward. `pnpm typecheck`/`check:boundaries` clean.
       - `apps/customer-web` has 24 pre-existing `@typescript-eslint/no-explicit-any`
         lint errors (untouched since the same 4bf1d70 commit as the
         manager-web fix above) — `pnpm lint` still fails on this package.
@@ -522,9 +517,19 @@ it's clean — fix in the order below.
       These modules accept raw body params instead of validated DTOs.
       _Effort: Small_
 
-- [ ] **C3 — Add missing migration snapshots for migrations 12-19**
-      Only snapshots 0000-0011 exist in `meta/`. Could cause schema drift.
-      _Effort: Small_
+- [x] **C3 — Migration snapshot gap investigated (2026-07-25), not a real bug**
+      Intermediate snapshots for 0009,0010,0012-0019 are still missing
+      from `meta/` (hand-written migrations skipped `drizzle-kit
+      generate`), but this doesn't cause drift: `drizzle-kit check`
+      reports "Everything's fine" and `drizzle-kit generate` reports "No
+      schema changes, nothing to migrate" against the real schema — the
+      last real snapshot (`0022`) is accurate, which is all drizzle-kit's
+      tooling actually reads for future diffs. `0020_reconcile_schema_drift.sql`
+      (see M2 above) is what actually closed the drift risk. Hand-crafting
+      fake historical snapshot JSON for the gap was considered and
+      rejected — getting drizzle-kit's internal id/prevId hash chain
+      wrong by hand risks turning a cosmetic gap into a real one, for a
+      purely archival benefit.
 
 - [ ] **C4 — Add `logging` core module**
       `apps/api/src/core/logging/` is empty (only `.gitkeep`).
@@ -534,13 +539,248 @@ it's clean — fix in the order below.
 
 ## MEDIUM PRIORITY
 
-- [ ] **D1 — Add remaining payment adapters**
-      Airtel Money, Flutterwave, Stripe defined in domain types but no
-      implementation in `packages/integrations`.
+- [x] **D1 — Add remaining payment adapters** — Done 2026-07-25.
+      Added `airtel-money.adapter.ts`, `flutterwave.adapter.ts`, and
+      `pesapal.adapter.ts` to `packages/integrations/src/payments/adapters/`
+      (real `fetch()`-based implementations following the existing
+      mpesa/paystack pattern — OAuth2 + STK-style push for Airtel, payment
+      link + server-side re-verification for Flutterwave, bearer-token
+      order submission + unsigned-IPN-so-re-verify-via-GetTransactionStatus
+      for PesaPal) and registered them in `payment-provider.factory.ts`
+      plus `PaymentProviderSchema` (`packages/domain`) and
+      `ConnectIntegrationDto`'s allowlist. Package + full monorepo
+      typecheck clean, `check:boundaries` clean.
+      **A Stripe adapter was also built in this same pass, then removed the
+      same day** on the user's explicit call — "it doesn't work with
+      African businesses" (migration `0025_remove_stripe_provider.sql`:
+      deleted `stripe.adapter.ts`, dropped `stripe` from
+      `PaymentProviderSchema`/`ConnectIntegrationDto`/the DB `provider`
+      CHECK constraints; verified zero existing rows referenced it before
+      dropping). Correct call — Stripe has no African card-scheme/mobile-
+      money settlement or bank payout rails, so it would never have been a
+      real acquiring option for this business's actual customers, only
+      dead weight.
+      **Not done, and a real follow-up**: these adapters are reachable via
+      `getPaymentAdapter()` (so refunds work generically once a payment
+      exists) but nothing in `apps/api` can actually *create* a
+      Flutterwave/Airtel/PesaPal payment yet — `takeMpesa`/`takeCard` are
+      the only "take payment" service methods, both hardcoded to their one
+      provider. Adding `takeFlutterwave`/`takeAirtelMoney`/`takePesapal`
+      (DTOs + controller routes + service methods, mirroring `takeCard`)
+      plus a webhook route per provider (mirroring
+      `PaymentsWebhookController`'s existing `mpesa/:orgId` and
+      `paystack/:orgId` handlers) is its own contained task, deliberately
+      not bundled into this pass — untested third-party credentials for 3
+      more providers is a bigger, different kind of risk than writing the
+      adapters themselves. PesaPal also needs a one-time IPN URL
+      registration step per merchant (`POST /URLSetup/RegisterIPN`) before
+      its adapter can be used — not yet wired into the connect-integration
+      flow, so `ipnId` must currently be obtained and supplied manually.
 
-- [ ] **D2 — Wire Paystack refund endpoint**
-      Currently returns `requiresManualSettlement: true` with "contact
-      Paystack support" message.
+- [x] **D1a — Add M-Pesa C2B (Paybill/Till manual payment)** — Done
+      2026-07-25 (researched earlier the same day, then built same-day on
+      request). Adds the flow STK Push doesn't cover: a customer dials the
+      M-Pesa menu themselves and types a Paybill+account number or Till
+      number, no push involved.
+      - `registerMpesaC2BUrls`/`validateC2BPayload` added to
+        `mpesa.adapter.ts` (exported directly from `packages/integrations`,
+        not through `getPaymentAdapter` — C2B isn't a per-payment call, it's
+        a one-time-per-shortcode setup call plus two passive webhook
+        handlers, a different shape from the rest of `PaymentAdapter`).
+      - New table `mpesa_c2b_transactions` (migrations 0023-0024) — a
+        staging/reconciliation ledger, since a C2B payment arrives with no
+        `payment_intent` to confirm against, unlike every other payment
+        path in this codebase. `location_id` is nullable (unlike every
+        other payment table) because the incoming payload carries no
+        location — resolved transitively once matched to a bill.
+      - `PaymentsService`: `registerMpesaC2b` (staff setup,
+        `payments:connect_integration`), `handleMpesaC2bValidation` (fast
+        accept/reject before settlement — Safaricom disables this by
+        default on most shortcodes), `handleMpesaC2bConfirmation` (lands
+        the payment; auto-matches if `BillRefNumber` is an exact bill/order
+        UUID, else stays `unmatched`), `listUnmatchedMpesaC2b` /
+        `matchMpesaC2b` (staff reconciliation, `payments:reconcile`).
+      - Routes: `POST /payments/mpesa-c2b/register`,
+        `GET /payments/mpesa-c2b/unmatched`,
+        `POST /payments/mpesa-c2b/:transactionId/match`, plus two
+        unauthenticated webhook routes on `PaymentsWebhookController`
+        (`mpesa/c2b/validation/:orgId`, `mpesa/c2b/confirmation/:orgId`).
+      - Added `PUBLIC_URL` to `.env.example` — needed to build the absolute
+        webhook URLs handed to Safaricom at registration time; didn't exist
+        before (one payments.service.ts call site already read it
+        undocumented for split-payment links).
+      - **Found and fixed two bugs along the way, unrelated to C2B itself
+        but caught while building and verifying it:**
+        1. `scripts/check-module-boundaries.mts`'s table-name regex was
+           `[a-z_]+` — silently fails to match any table name containing a
+           digit (e.g. `mpesa_c2b_transactions`). Widened to `[a-z0-9_]+`.
+        2. The Stripe/Flutterwave/PesaPal adapters added earlier this
+           session had a real money bug: `input.amount` is whole currency
+           units throughout this codebase (e.g. 1200 = KES 1,200 — confirmed
+           against M-Pesa's own Daraja `Amount` field, which takes this
+           value unconverted), not cents as their doc comments claimed.
+           Flutterwave/PesaPal's `/100` would have undercharged 100x; Stripe
+           not converting at all would also have undercharged 100x (Stripe
+           genuinely wants cents). Fixed all three adapters' initiate/
+           verify/refund amount conversions.
+      - Verified for real against the seeded dev DB, not just typecheck:
+        booted the API, POSTed synthetic Validation and Confirmation
+        payloads shaped like Safaricom's real callback, confirmed the
+        transaction landed `unmatched` in the DB, manually matched it to a
+        real bill via the staff endpoint (partial payment — bill correctly
+        stayed `open`), confirmed re-matching an already-matched transaction
+        is rejected, then separately drove a second confirmation with
+        `BillRefNumber` set to an exact bill id and confirmed it
+        auto-matched and flipped the bill straight to `paid`. Also
+        discovered and fixed a stale bookkeeping gap in this dev DB's
+        `drizzle.__drizzle_migrations` table (migration 0022 had been
+        applied by hand in an earlier session and was never recorded,
+        which didn't break anything functionally but would have confused
+        future `drizzle-kit migrate` runs) — backfilled both missing hash
+        rows. `pnpm typecheck` (23/23 packages) and `check:boundaries` (77
+        tables) both clean; all test data cleaned from the dev DB
+        afterward.
+      **Not done, a real follow-up**: `registerMpesaC2b` was written and
+      typechecks but its actual Safaricom API call was never exercised
+      live (no sandbox credentials available in this session) — only the
+      inbound webhook/reconciliation half was verified end-to-end.
+
+- [x] **D1c — Generalize take-payment/webhook routes across providers** —
+      Done 2026-07-25, user's explicit call after being shown the tradeoff
+      (touches working M-Pesa/Paystack code vs. keeps per-provider
+      boilerplate growing forever). Every `PaymentAdapter`-based provider
+      (`mpesa_daraja`, `paystack`, `airtel_money_api`, `flutterwave`,
+      `pesapal`) now goes through one route each instead of one route per
+      provider:
+      - `POST /bills/:billId/payments/:provider` replaces the old
+        `.../mpesa` and `.../card` routes — `takeMpesa`/`takeCard` deleted,
+        replaced by one `PaymentsService.takePayment()`. Cash,
+        card-terminal, and bank-transfer are NOT part of this — no external
+        round-trip/webhook, so they keep their own dedicated
+        methods/routes/DTOs. Registered *after* those static routes in the
+        controller — Express matches in registration order, so the dynamic
+        `:provider` segment would otherwise shadow `/cash` etc.
+      - `POST /webhooks/:provider/:orgId` replaces `.../mpesa` and
+        `.../paystack` — `handleMpesaWebhook`/`handlePaystackWebhook`
+        deleted, replaced by one `PaymentsService.handleProviderWebhook()`.
+        The M-Pesa-only Module 18 fraud check stays as a
+        `provider === 'mpesa_daraja'` branch inside the generic method —
+        an honest small escape hatch rather than a forced fake abstraction.
+      - Repurposed the existing (previously unused, comment said "not used
+        directly by any endpoint") `take-payment.dto.ts` into the real
+        generic DTO instead of adding a new file. Deleted
+        `take-mpesa-payment.dto.ts`/`take-card-payment.dto.ts` — Kenyan-
+        phone-number-format validation moved from DTO annotation to the
+        adapter runtime (`mpesa.adapter.ts`'s `formatPhone`, which already
+        threw a clear error on a bad number).
+      - Authorization preserved exactly: waiters have `payments:take_mobile_money`
+        but not `payments:take_card` (cashier/manager have both) in the
+        seed data. A single route can't statically vary
+        `@RequirePermission` by the `:provider` param's runtime value, so
+        the route requires the floor permission
+        (`take_mobile_money`) and `takePayment` additionally checks
+        `take_card` in-service when the resolved payment method needs it —
+        verified live as a waiter: blocked on `paystack` with a clear
+        `permission_denied`, allowed through on `mpesa_daraja` (proceeding
+        to `integration_not_configured`, i.e. past the permission gate).
+      - Fixed a real gap along the way: `TakeCardPaymentDto.tipAmount` was
+        collected but never actually applied anywhere for the
+        webhook-confirmed (Paystack) path — only cash/card-terminal/
+        bank-transfer's *immediate*-confirm paths ever inserted a `tips`
+        row. Generic `takePayment` now stashes tip info on the intent's
+        `metadata` and `handleProviderWebhook` applies it once the payment
+        actually confirms.
+      - Fixed a second, more severe pre-existing gap while generalizing the
+        two webhook handlers into one: found that `handleMpesaWebhook`
+        looked up the intent by `eq(paymentIntents.providerReference,
+        result.providerReference)`, but M-Pesa's `verifyWebhook` sets
+        `providerReference` to the **receipt number** on success (only
+        falls back to the original `CheckoutRequestID` on failure) — while
+        the intent was stored under `CheckoutRequestID` at creation. **A
+        successful M-Pesa STK payment could never be matched to its bill**,
+        so `settleBillIfFullyPaid`/`emitPaymentConfirmed` would never fire
+        even though the customer's money had genuinely arrived. Verified
+        this was really happening (not a refactor-introduced bug) by
+        reproducing it against the untouched original code path before
+        fixing. Root cause: the interface's `paymentIntentId` field (with
+        its own comment — "the adapter returns [this] as the lookup key")
+        was designed for exactly this lookup and was simply never used;
+        the code used `providerReference` instead. Also found the fix
+        isn't uniform across adapters — Paystack/Flutterwave put *our own*
+        `payment_intents.id` in `paymentIntentId` (echoed back via
+        metadata), while M-Pesa/Airtel/PesaPal put *their* tracking
+        reference there (matching what's in `providerReference` at
+        creation). Fixed with one `OR` in the lookup query, guarded so the
+        `id` branch only runs when the value is actually UUID-shaped
+        (Postgres throws, not just "no match," comparing a non-UUID string
+        against a `uuid` column — M-Pesa's `CheckoutRequestID` never is).
+      - Verified for real, not just typecheck: booted the API, drove the
+        generic route with an unsupported provider (clean 400), with
+        `mpesa_daraja` (reached `integration_not_configured`, same as the
+        old dedicated route), connected a real (test-value, properly
+        AES-256-GCM-encrypted via the actual connect-integration endpoint)
+        `mpesa_daraja` integration, manually seeded a `processing` intent,
+        and POSTed a Safaricom-shaped successful STK callback to the new
+        generic webhook route — confirmed `status: confirmed`, the bill
+        flipped to `paid`, and the final `payments` row correctly stored
+        the receipt number while the lookup matched via the
+        `CheckoutRequestID` path. Also confirmed the static `/cash` route
+        still works unshadowed. All test data cleaned from the dev DB
+        afterward. `pnpm typecheck` (23/23) and `check:boundaries` (77
+        tables) clean.
+      - Incidentally discovered and documented (not fixed further — out of
+        scope) that local dev never had `CREDENTIALS_ENCRYPTION_KEY` set at
+        all; connecting any payment integration has been throwing a clear
+        "must be set to exactly 64 hex characters" error this whole time.
+        Added a generated key to the local (gitignored) `.env` to unblock
+        this session's verification, and documented the var properly in
+        `.env.example` (it existed as an undocumented requirement before).
+
+- [ ] **D1b — Kenyan bank/terminal payment options researched, not built
+      (2026-07-25)**. User asked what else exists beyond the 5 gateway
+      adapters — physical terminals and direct bank APIs specifically.
+      Findings, in case any of these become worth building:
+      - **Physical terminals** (Safaricom Lipa Na M-Pesa POS, DPO Network
+        POS, Pesapal POS) are hardware SKUs of payment accounts we already
+        have API access to (Pesapal) or are simply out of our software's
+        scope (Safaricom's own rented terminal). The one genuinely new
+        *pattern* worth building later: **tap-to-phone** (KCB's version
+        turns a waiter's own Android device into a card reader, no
+        dedicated hardware) — that's a `pos-mobile` app feature, not a
+        backend adapter.
+      - **Kopo Kopo** — real standalone candidate for a 7th adapter.
+        Kenya-native, STK-push-shaped API (`api-docs.kopokopo.com`, same
+        request/callback pattern as our M-Pesa adapter), 10,000+ merchants,
+        Safaricom-partnered since 2011.
+      - **Equity Jenga API** (developer.jengahq.io) and **KCB Buni API**
+        (buni.kcbgroup.com) — both full payment gateways (cards + all
+        Kenyan mobile money + bank transfer) tied to a single bank. Worth
+        it only for a merchant who specifically banks there and wants to
+        skip a 3rd-party aggregator's cut.
+      - **Co-operative Bank** (Co-opConnect) and **NCBA** (IPN API) have
+        public developer portals too, more payout/account-data-focused
+        than card acquiring.
+      - **Stanbic**, **Absa Kenya**, **Family Bank** — no clean, self-serve
+        public developer portal found; likely enterprise-sales-led
+        integration, not a quick adapter to write.
+      - **PesaLink** (real-time interbank transfer network, 80+ Kenyan
+        institutions, up to KES 999,999/transaction) is **already reachable
+        through the existing Paystack adapter** — Paystack added PesaLink
+        checkout in Kenya, so once a merchant enables it on their Paystack
+        account, our hosted-checkout flow offers it with zero extra code.
+        Direct integration would mean going through a member bank or an
+        aggregator like Cellulant instead.
+      - **Cellulant Tingg** — pan-African reach (200+ payment methods
+        across the continent), relevant if the business expands beyond
+        Kenya.
+      Recommended build order if picked up: Kopo Kopo first (closest to
+      code we already have), then Equity/KCB only if a specific merchant
+      needs it.
+
+- [x] **D2 — Wire Paystack refund endpoint** — Done 2026-07-25. Replaced the
+      stub with a real `POST /refund` call (transaction reference + amount +
+      currency); falls back to `requiresManualSettlement: true` only on an
+      actual API failure or account without refund access, same as before.
 
 - [ ] **D3 — Add connector config to `packages/config`**
       Only `appPorts` exists. No env var schemas, feature flags, or

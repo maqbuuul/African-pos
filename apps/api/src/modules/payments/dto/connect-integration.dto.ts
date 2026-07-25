@@ -7,7 +7,7 @@ export class ConnectIntegrationDto {
 
   // Supported payment providers for this endpoint. Additional providers are
   // added here as integrations are built out (BUILD_WORKFLOW.md P7).
-  @IsIn(['mpesa_daraja', 'paystack', 'airtel_money_api', 'stripe', 'flutterwave', 'manual'])
+  @IsIn(['mpesa_daraja', 'paystack', 'airtel_money_api', 'flutterwave', 'pesapal', 'manual'])
   provider!: string
 
   // Raw credentials — encrypted with AES-256-GCM before storage (encrypt.ts).

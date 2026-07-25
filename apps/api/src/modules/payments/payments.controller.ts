@@ -6,14 +6,15 @@ import { RequirePermission } from '../../core/permissions/require-permission.dec
 import { ValidatedBody } from '../../core/validation/validated-body.decorator.js'
 import { ChargeBarTabDto } from './dto/charge-bar-tab.dto.js'
 import { ConnectIntegrationDto } from './dto/connect-integration.dto.js'
+import { MatchMpesaC2bDto } from './dto/match-mpesa-c2b.dto.js'
 import { OpenBarTabDto } from './dto/open-bar-tab.dto.js'
+import { RegisterMpesaC2bDto } from './dto/register-mpesa-c2b.dto.js'
 import { RequestRefundDto } from './dto/request-refund.dto.js'
 import { SettleBarTabDto } from './dto/settle-bar-tab.dto.js'
 import { TakeBankTransferPaymentDto } from './dto/take-bank-transfer-payment.dto.js'
 import { TakeCashPaymentDto } from './dto/take-cash-payment.dto.js'
-import { TakeCardPaymentDto } from './dto/take-card-payment.dto.js'
 import { TakeCardTerminalPaymentDto } from './dto/take-card-terminal-payment.dto.js'
-import { TakeMpesaPaymentDto } from './dto/take-mpesa-payment.dto.js'
+import { TakePaymentDto } from './dto/take-payment.dto.js'
 import { APPROVAL_HEADER, PaymentsService } from './payments.service.js'
 
 @Controller('api/v1')
@@ -37,28 +38,6 @@ export class PaymentsController {
     return this.paymentsService.takeCash(req.authContext!, billId, dto)
   }
 
-  // POST /api/v1/bills/:billId/payments/mpesa
-  @Post('bills/:billId/payments/mpesa')
-  @RequirePermission('payments:take_mobile_money')
-  takeMpesa(
-    @Param('billId') billId: string,
-    @ValidatedBody(TakeMpesaPaymentDto) dto: TakeMpesaPaymentDto,
-    @Req() req: Request,
-  ) {
-    return this.paymentsService.takeMpesa(req.authContext!, billId, dto)
-  }
-
-  // POST /api/v1/bills/:billId/payments/card
-  @Post('bills/:billId/payments/card')
-  @RequirePermission('payments:take_card')
-  takeCard(
-    @Param('billId') billId: string,
-    @ValidatedBody(TakeCardPaymentDto) dto: TakeCardPaymentDto,
-    @Req() req: Request,
-  ) {
-    return this.paymentsService.takeCard(req.authContext!, billId, dto)
-  }
-
   // POST /api/v1/bills/:billId/payments/card-terminal
   @Post('bills/:billId/payments/card-terminal')
   @RequirePermission('payments:take_card')
@@ -79,6 +58,28 @@ export class PaymentsController {
     @Req() req: Request,
   ) {
     return this.paymentsService.takeBankTransfer(req.authContext!, billId, dto)
+  }
+
+  // POST /api/v1/bills/:billId/payments/:provider
+  // Generic route for every PaymentAdapter-based provider (mpesa_daraja,
+  // paystack, airtel_money_api, flutterwave, pesapal) — one route, one DTO,
+  // instead of a hand-written route per provider. Must stay registered
+  // *after* the static /cash, /card-terminal, /bank-transfer routes above:
+  // Express matches routes in registration order, so a static segment has to
+  // come first or this dynamic :provider route would shadow them.
+  // Permission: take_mobile_money is the floor (every online provider needs
+  // at least that); card-shaped providers additionally require take_card,
+  // enforced inside the service since a single decorator can't vary by the
+  // :provider param's runtime value.
+  @Post('bills/:billId/payments/:provider')
+  @RequirePermission('payments:take_mobile_money')
+  takePayment(
+    @Param('billId') billId: string,
+    @Param('provider') provider: string,
+    @ValidatedBody(TakePaymentDto) dto: TakePaymentDto,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.takePayment(req.authContext!, billId, provider, dto)
   }
 
   // GET /api/v1/bills/:billId/payments
@@ -183,6 +184,34 @@ export class PaymentsController {
   }
 
   // ---------------------------------------------------------------------------
+  // M-Pesa C2B (Paybill/Till manual payment)
+  // ---------------------------------------------------------------------------
+  // POST /api/v1/payments/mpesa-c2b/register
+  @Post('payments/mpesa-c2b/register')
+  @RequirePermission('payments:connect_integration')
+  registerMpesaC2b(@ValidatedBody(RegisterMpesaC2bDto) dto: RegisterMpesaC2bDto, @Req() req: Request) {
+    return this.paymentsService.registerMpesaC2b(req.authContext!, dto)
+  }
+
+  // GET /api/v1/payments/mpesa-c2b/unmatched
+  @Get('payments/mpesa-c2b/unmatched')
+  @RequirePermission('payments:reconcile')
+  listUnmatchedMpesaC2b(@Req() req: Request) {
+    return this.paymentsService.listUnmatchedMpesaC2b(req.authContext!)
+  }
+
+  // POST /api/v1/payments/mpesa-c2b/:transactionId/match
+  @Post('payments/mpesa-c2b/:transactionId/match')
+  @RequirePermission('payments:reconcile')
+  matchMpesaC2b(
+    @Param('transactionId') transactionId: string,
+    @ValidatedBody(MatchMpesaC2bDto) dto: MatchMpesaC2bDto,
+    @Req() req: Request,
+  ) {
+    return this.paymentsService.matchMpesaC2b(req.authContext!, transactionId, dto)
+  }
+
+  // ---------------------------------------------------------------------------
   // Reports
   // ---------------------------------------------------------------------------
   // GET /api/v1/payments/unreconciled
@@ -218,37 +247,58 @@ export class PaymentsController {
 // 2. Provider-specific signature verification inside the service
 // 3. IP whitelisting at the load balancer (infra concern)
 // ---------------------------------------------------------------------------
+// Each provider signs (or doesn't sign) its webhook payload differently —
+// mpesa_daraja/airtel_money_api/pesapal don't sign at all (their adapters
+// ignore the `signature` argument), paystack HMAC-signs via this header,
+// flutterwave echoes back a static configured hash via this header. Kept in
+// the controller (HTTP-layer concern) rather than the service, same as the
+// header names the old per-provider handlers each hardcoded individually.
+const WEBHOOK_SIGNATURE_HEADER: Partial<Record<string, string>> = {
+  paystack: 'x-paystack-signature',
+  flutterwave: 'verif-hash',
+}
+
 @Controller('api/v1/webhooks')
 export class PaymentsWebhookController {
   constructor(@Inject(PaymentsService) private readonly paymentsService: PaymentsService) {}
 
-  // POST /api/v1/webhooks/mpesa/:orgId
-  // M-Pesa STK push result callback. M-Pesa does not HMAC-sign payloads;
-  // the service verifies via CheckoutRequestID lookup against known intents.
-  @Post('mpesa/:orgId')
+  // POST /api/v1/webhooks/:provider/:orgId
+  // One route for every PaymentAdapter-based provider (mpesa_daraja,
+  // paystack, airtel_money_api, flutterwave, pesapal) — verification is
+  // fully delegated to that provider's adapter via
+  // PaymentsService.handleProviderWebhook, so this route needs no
+  // provider-specific logic beyond picking the right signature header.
+  @Post(':provider/:orgId')
   @HttpCode(200)
-  handleMpesaWebhook(
+  handleProviderWebhook(
+    @Param('provider') provider: string,
     @Param('orgId') orgId: string,
     @Req() req: Request,
     @Headers() headers: Record<string, string>,
   ) {
     const rawPayload = JSON.stringify(req.body)
-    const signature = req.headers['x-mpesa-signature'] as string | undefined
-    return this.paymentsService.handleMpesaWebhook(orgId, rawPayload, signature, headers)
+    const signatureHeader = WEBHOOK_SIGNATURE_HEADER[provider]
+    const signature = signatureHeader ? (req.headers[signatureHeader] as string | undefined) : undefined
+    return this.paymentsService.handleProviderWebhook(orgId, provider, rawPayload, signature, headers)
   }
 
-  // POST /api/v1/webhooks/paystack/:orgId
-  // Paystack event callback. Verified via HMAC-SHA512 of the raw payload
-  // using the Paystack secret key stored in integration_connections.
-  @Post('paystack/:orgId')
+  // POST /api/v1/webhooks/mpesa/c2b/validation/:orgId
+  // Called before a C2B (Paybill/Till) payment settles — only if Safaricom
+  // has separately enabled Validation for the shortcode (disabled by
+  // default). Must respond fast; no signature (M-Pesa doesn't sign C2B).
+  @Post('mpesa/c2b/validation/:orgId')
   @HttpCode(200)
-  handlePaystackWebhook(
-    @Param('orgId') orgId: string,
-    @Req() req: Request,
-    @Headers() headers: Record<string, string>,
-  ) {
-    const rawPayload = JSON.stringify(req.body)
-    const signature = req.headers['x-paystack-signature'] as string | undefined
-    return this.paymentsService.handlePaystackWebhook(orgId, rawPayload, signature, headers)
+  handleMpesaC2bValidation(@Req() req: Request) {
+    return this.paymentsService.handleMpesaC2bValidation(req.body)
   }
+
+  // POST /api/v1/webhooks/mpesa/c2b/confirmation/:orgId
+  // Called after a C2B payment has already settled. Always ACKs 200 — this
+  // is a notice, not a request awaiting accept/reject.
+  @Post('mpesa/c2b/confirmation/:orgId')
+  @HttpCode(200)
+  handleMpesaC2bConfirmation(@Param('orgId') orgId: string, @Req() req: Request) {
+    return this.paymentsService.handleMpesaC2bConfirmation(orgId, req.body)
+  }
+
 }

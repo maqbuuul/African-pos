@@ -9,7 +9,7 @@ import type {
   PaymentWebhookResult,
 } from '../payment-adapter.interface.js'
 
-interface MpesaCredentials {
+export interface MpesaCredentials {
   consumerKey: string
   consumerSecret: string
   passkey: string
@@ -62,6 +62,10 @@ function formatPhone(phone: string): string {
   // Already international without the leading +
   if (/^254\d{9}$/.test(cleaned)) {
     return cleaned
+  }
+  // 7XXXXXXXX / 1XXXXXXXX — no leading 0, no country code.
+  if (/^[17]\d{8}$/.test(cleaned)) {
+    return '254' + cleaned
   }
   throw new Error(
     `Invalid phone number format: "${phone}". ` +
@@ -313,4 +317,94 @@ export class MpesaAdapter implements PaymentAdapter {
       }
     }
   }
+}
+
+export interface RegisterC2BUrlResult {
+  responseCode: string
+  responseDescription: string
+}
+
+// C2B (Paybill/Till manual payment) is a separate collection flow from STK
+// Push above: the customer dials the M-Pesa menu themselves and types the
+// shortcode + account number (Paybill) or just the shortcode (Till/Buy
+// Goods) — no request from this system initiates it. Before Safaricom will
+// ever call a merchant's C2B webhooks, the shortcode's Validation and
+// Confirmation URLs must be registered once via this endpoint. Re-running it
+// simply overwrites the previously registered URLs — safe to call again if
+// the callback host changes.
+export async function registerMpesaC2BUrls(
+  credentials: MpesaCredentials,
+  validationUrl: string,
+  confirmationUrl: string,
+  // 'Completed' = only Confirmation is called (Validation is skipped unless
+  // Safaricom has enabled it for the shortcode, which is opt-in and rare —
+  // see verifyC2BValidation's own comment). 'Cancelled' would mean neither
+  // callback fires, which is never what we want.
+  responseType: 'Completed' | 'Cancelled' = 'Completed',
+): Promise<RegisterC2BUrlResult> {
+  const baseUrl = BASE_URLS[credentials.environment]
+  const accessToken = await getAccessToken(baseUrl, credentials.consumerKey, credentials.consumerSecret)
+
+  const response = await fetch(`${baseUrl}/mpesa/c2b/v2/registerurl`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ShortCode: credentials.shortcode,
+      ResponseType: responseType,
+      ConfirmationURL: confirmationUrl,
+      ValidationURL: validationUrl,
+    }),
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`M-Pesa C2B Register URL request failed (HTTP ${response.status}): ${text}`)
+  }
+
+  const data = (await response.json()) as { ResponseCode?: string; ResponseDescription?: string }
+  if (data.ResponseCode !== '0') {
+    throw new Error(`M-Pesa C2B Register URL rejected: ${data.ResponseDescription ?? 'unknown error'}`)
+  }
+
+  return { responseCode: data.ResponseCode, responseDescription: data.ResponseDescription ?? '' }
+}
+
+export interface C2BValidationPayload {
+  TransactionType?: string
+  TransID?: string
+  TransTime?: string
+  TransAmount?: string
+  BusinessShortCode?: string
+  BillRefNumber?: string
+  InvoiceNumber?: string
+  OrgAccountBalance?: string
+  ThirdPartyTransID?: string
+  MSISDN?: string
+  FirstName?: string
+  MiddleName?: string
+  LastName?: string
+}
+
+export interface C2BValidationResult {
+  resultCode: '0' | 'C2B00011' | 'C2B00012' | 'C2B00013' | 'C2B00014' | 'C2B00016'
+  resultDesc: string
+}
+
+// Validation is disabled by default on most shortcodes (Safaricom requires a
+// separate request to enable it) — when disabled, M-Pesa never calls this
+// URL at all and every C2B payment goes straight to Confirmation. When it IS
+// enabled, this must respond fast and only reject for structurally invalid
+// payloads: by the time this fires, the customer has already entered their
+// PIN, so rejecting anything we're merely *unsure* about (e.g. an
+// unrecognized BillRefNumber) would fail a payment the customer believes
+// already went through. Amount/shortcode sanity checks only.
+export function validateC2BPayload(payload: C2BValidationPayload): C2BValidationResult {
+  const amount = Number(payload.TransAmount)
+  if (!payload.TransID || !payload.MSISDN || !Number.isFinite(amount) || amount <= 0) {
+    return { resultCode: 'C2B00011', resultDesc: 'Rejected — malformed payload' }
+  }
+  return { resultCode: '0', resultDesc: 'Accepted' }
 }

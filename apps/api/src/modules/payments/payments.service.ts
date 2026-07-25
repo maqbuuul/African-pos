@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 
-import { BadRequestException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common'
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { BadRequestException, ForbiddenException, forwardRef, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Pool } from 'pg'
 import {
   decryptCredentials,
   encryptCredentials,
   integrationConnections,
+  mpesaC2bTransactions,
   paymentIntents,
   payments,
   refunds,
@@ -14,8 +15,14 @@ import {
   withTenantContext,
   type Db,
 } from '@hospitality-os/database'
-import { PAYMENT_INTENT_STATUS_TRANSITIONS, type PaymentIntentStatus } from '@hospitality-os/domain'
-import { getPaymentAdapter } from '@hospitality-os/integrations'
+import { PAYMENT_INTENT_STATUS_TRANSITIONS, type PaymentIntentStatus, type PaymentMethod } from '@hospitality-os/domain'
+import {
+  getPaymentAdapter,
+  registerMpesaC2BUrls,
+  validateC2BPayload,
+  type C2BValidationPayload,
+  type MpesaCredentials,
+} from '@hospitality-os/integrations'
 
 import { AuditLogService } from '../../core/audit/audit-log.service.js'
 import { OutboxService } from '../../core/events/outbox.service.js'
@@ -30,13 +37,14 @@ import { OrdersService } from '../orders/orders.service.js'
 import { ProductsService } from '../products/products.service.js'
 import type { TakeBankTransferPaymentDto } from './dto/take-bank-transfer-payment.dto.js'
 import type { TakeCashPaymentDto } from './dto/take-cash-payment.dto.js'
-import type { TakeCardPaymentDto } from './dto/take-card-payment.dto.js'
 import type { TakeCardTerminalPaymentDto } from './dto/take-card-terminal-payment.dto.js'
-import type { TakeMpesaPaymentDto } from './dto/take-mpesa-payment.dto.js'
+import type { TakePaymentDto } from './dto/take-payment.dto.js'
 import type { RequestRefundDto } from './dto/request-refund.dto.js'
 import type { ConnectIntegrationDto } from './dto/connect-integration.dto.js'
 import type { OpenBarTabDto } from './dto/open-bar-tab.dto.js'
 import type { ChargeBarTabDto } from './dto/charge-bar-tab.dto.js'
+import type { RegisterMpesaC2bDto } from './dto/register-mpesa-c2b.dto.js'
+import type { MatchMpesaC2bDto } from './dto/match-mpesa-c2b.dto.js'
 
 // Per-module approval-request action key for refunds (ApprovalsController.resolve requires
 // the resolver to hold a permission whose key equals the approval action literally —
@@ -59,6 +67,61 @@ const PAYSTACK_INTENT_TTL_MS = 60 * 60 * 1000
 // by creating a new intent (idempotency check bypasses these).
 const RETRYABLE_INTENT_STATUSES = new Set(['failed', 'cancelled', 'expired'])
 
+// Every provider reachable through the generic POST /bills/:billId/payments/:provider
+// and POST /webhooks/:provider/:orgId routes — i.e. every provider that
+// implements the PaymentAdapter interface (initiatePayment + verifyWebhook).
+// Cash, card-terminal, and bank-transfer are NOT here: no external
+// round-trip, no webhook, immediate confirmation — they keep their own
+// dedicated methods/routes/DTOs. Adding a new adapter-based provider is
+// "add one line here (+ the permission map below), write the adapter,
+// register it in payment-provider.factory.ts" — nothing else.
+const ONLINE_PROVIDER_METHOD: Record<string, PaymentMethod> = {
+  mpesa_daraja: 'mpesa',
+  airtel_money_api: 'airtel_money',
+  paystack: 'card',
+  flutterwave: 'card',
+  pesapal: 'card',
+}
+
+// STK-push-style providers push a prompt to the customer's phone and expire
+// quickly; hosted-checkout providers give the customer a page/link to
+// complete at their own pace and last much longer.
+const ONLINE_PROVIDER_INTENT_TTL_MS: Record<string, number> = {
+  mpesa_daraja: MPESA_INTENT_TTL_MS,
+  airtel_money_api: MPESA_INTENT_TTL_MS,
+  paystack: PAYSTACK_INTENT_TTL_MS,
+  flutterwave: PAYSTACK_INTENT_TTL_MS,
+  pesapal: PAYSTACK_INTENT_TTL_MS,
+}
+
+// Mirrors the pre-generalization split between `payments:take_mobile_money`
+// (mpesa/airtel — granted to waiters too) and `payments:take_card`
+// (paystack/flutterwave/pesapal — cashier/manager only) permissions.
+// Preserved exactly: the route itself only requires take_mobile_money (the
+// broadest population who can call it at all); takePayment additionally
+// requires take_card at runtime when the resolved method needs it, since a
+// single route can't statically declare "the permission depends on the
+// :provider param" via @RequirePermission.
+const ONLINE_PROVIDER_EXTRA_PERMISSION: Partial<Record<PaymentMethod, string>> = {
+  card: 'payments:take_card',
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Safaricom C2B TransTime format: YYYYMMDDHHmmss (local time), same as the
+// STK Push callback's TransactionDate — see mpesa.adapter.ts's getTimestamp.
+function parseC2bTransTime(raw: string | undefined): Date {
+  if (!raw || raw.length !== 14) return new Date()
+  return new Date(
+    parseInt(raw.slice(0, 4), 10),
+    parseInt(raw.slice(4, 6), 10) - 1,
+    parseInt(raw.slice(6, 8), 10),
+    parseInt(raw.slice(8, 10), 10),
+    parseInt(raw.slice(10, 12), 10),
+    parseInt(raw.slice(12, 14), 10),
+  )
+}
+
 @Injectable()
 export class PaymentsService {
   constructor(
@@ -76,6 +139,47 @@ export class PaymentsService {
     @Inject(ProductsService) private readonly productsService: ProductsService,
     @Inject(StaffNotificationsService) private readonly staffNotifications: StaffNotificationsService,
   ) {}
+
+  // Idempotency short-circuit shared by every payment-taking method. Must run
+  // before loadBill: a retry (client timeout, network blip after the first
+  // attempt actually succeeded) can arrive after the bill it paid off has
+  // already moved to 'paid', and loadBill's status guard would otherwise
+  // reject the retry with bill_already_paid instead of returning the prior
+  // result — defeating the entire point of the idempotency key (PRD 07).
+  private async resolveIdempotentRetry(
+    db: Db,
+    organizationId: string,
+    idempotencyKey: string,
+  ): Promise<typeof paymentIntents.$inferSelect | null> {
+    const existing = await this.idempotency.findExistingIntent(db, organizationId, idempotencyKey)
+    if (!existing || RETRYABLE_INTENT_STATUSES.has(existing.status)) return null
+    return existing
+  }
+
+  // Same idempotency short-circuit, for the three methods (cash, card
+  // terminal, bank transfer) that confirm synchronously in the same
+  // transaction the intent is created in — for those, a non-retryable
+  // existing intent is always 'confirmed' with a matching `payments` row
+  // already inserted, so this returns that row (not the intent) to keep a
+  // retry's response shape identical to the original call's.
+  private async resolveConfirmedIdempotentRetry(
+    db: Db,
+    organizationId: string,
+    idempotencyKey: string,
+  ): Promise<typeof payments.$inferSelect | null> {
+    const existing = await this.resolveIdempotentRetry(db, organizationId, idempotencyKey)
+    if (!existing) return null
+    const [confirmedPayment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.paymentIntentId, existing.id))
+    if (!confirmedPayment) {
+      throw new Error(
+        `payment intent ${existing.id} (status=${existing.status}) has no matching payments row — data integrity violation`,
+      )
+    }
+    return confirmedPayment
+  }
 
   // Every payment-confirmation path (cash, card, mobile money, bank transfer)
   // calls this once its `payments` row is committed, inside the same
@@ -108,17 +212,10 @@ export class PaymentsService {
     }
 
     const payment = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
+      const idempotent = await this.resolveConfirmedIdempotentRetry(db, authContext.organizationId, dto.idempotencyKey)
+      if (idempotent) return idempotent
 
-      // Idempotency: return existing confirmed intent if this key was already processed.
-      const existing = await this.idempotency.findExistingIntent(
-        db,
-        authContext.organizationId,
-        dto.idempotencyKey,
-      )
-      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
-        return existing
-      }
+      const bill = await this.loadBill(db, authContext.organizationId, billId)
 
       const [intent] = await db
         .insert(paymentIntents)
@@ -195,29 +292,48 @@ export class PaymentsService {
   }
 
   // ---------------------------------------------------------------------------
-  // M-Pesa payment — STK push via Daraja API; bill confirmed via webhook.
-  // PRD 07: intent created (pending → processing), bill stays payment_pending
-  // until handleMpesaWebhook confirms. Returns intent for status polling.
+  // Generic online/hosted payment — every PaymentAdapter-based provider
+  // (M-Pesa STK push, Paystack, Airtel Money, Flutterwave, PesaPal) goes
+  // through this one method. Intent created (pending → processing), bill
+  // stays payment_pending until handleProviderWebhook confirms. Adding a new
+  // provider here means adding one line to ONLINE_PROVIDER_METHOD/
+  // ONLINE_PROVIDER_INTENT_TTL_MS above and to payment-provider.factory.ts —
+  // no new method, DTO, or route.
   // ---------------------------------------------------------------------------
-  async takeMpesa(authContext: AuthContext, billId: string, dto: TakeMpesaPaymentDto) {
-    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
+  async takePayment(authContext: AuthContext, billId: string, provider: string, dto: TakePaymentDto) {
+    const method = ONLINE_PROVIDER_METHOD[provider]
+    if (!method) {
+      throw new BadRequestException({
+        code: 'unsupported_provider',
+        message: `"${provider}" is not a supported online payment provider. Supported: ${Object.keys(ONLINE_PROVIDER_METHOD).join(', ')}`,
+      })
+    }
 
-      const existing = await this.idempotency.findExistingIntent(
-        db,
-        authContext.organizationId,
-        dto.idempotencyKey,
-      )
-      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
-        return existing
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const extraPermission = ONLINE_PROVIDER_EXTRA_PERMISSION[method]
+      if (extraPermission) {
+        const granted = await this.permissionsService.listGrantedPermissions(db, authContext)
+        if (!granted.includes(extraPermission)) {
+          throw new ForbiddenException({
+            code: 'permission_denied',
+            message: `taking a "${method}" payment via ${provider} requires missing permission: ${extraPermission}`,
+          })
+        }
       }
 
-      const { credentials } = await this.loadIntegrationCredentials(
-        db,
-        authContext.organizationId,
-        bill.locationId,
-        'mpesa_daraja',
-      )
+      const idempotent = await this.resolveIdempotentRetry(db, authContext.organizationId, dto.idempotencyKey)
+      if (idempotent) return idempotent
+
+      const bill = await this.loadBill(db, authContext.organizationId, billId)
+
+      const surchargeAmount = method === 'card' ? await this.computeCardSurcharge(db, authContext.organizationId, billId) : 0
+
+      const { credentials } = await this.loadIntegrationCredentials(db, authContext.organizationId, bill.locationId, provider)
+
+      // Tip is only realized once the payment actually confirms (see
+      // handleProviderWebhook) — stashed on the intent's metadata until then,
+      // same shape cash/card-terminal/bank-transfer apply immediately.
+      const metadata = dto.tipAmount && dto.tipAmount > 0 ? { tipAmount: dto.tipAmount, tipStaffId: dto.tipStaffId ?? null } : null
 
       // Create intent before calling the provider so a DB failure after the
       // provider call doesn't leave a dangling external transaction.
@@ -228,95 +344,22 @@ export class PaymentsService {
           locationId: bill.locationId,
           orderId: bill.orderId,
           billId,
-          method: 'mpesa',
-          provider: 'mpesa_daraja',
-          amount: dto.amount,
-          currency: dto.currency,
-          idempotencyKey: dto.idempotencyKey,
-          customerPhone: dto.customerPhone,
-          expiresAt: new Date(Date.now() + MPESA_INTENT_TTL_MS),
-          processedByActorId: authContext.actorId,
-        })
-        .returning()
-      if (!intent) throw new Error('failed to create M-Pesa payment intent')
-
-      const adapter = getPaymentAdapter('mpesa_daraja')
-      const result = await adapter.initiatePayment(
-        {
-          organizationId: authContext.organizationId,
-          locationId: bill.locationId,
-          billId,
-          paymentIntentId: intent.id,
-          amount: dto.amount,
-          currency: dto.currency,
-          idempotencyKey: dto.idempotencyKey,
-          customerPhone: dto.customerPhone,
-        },
-        credentials,
-      )
-
-      const [updated] = await db
-        .update(paymentIntents)
-        .set({
-          status: 'processing',
-          providerReference: result.providerReference,
-          updatedAt: sql`now()`,
-        })
-        .where(eq(paymentIntents.id, intent.id))
-        .returning()
-      if (!updated) throw new Error('failed to update M-Pesa intent to processing')
-
-      return updated
-    })
-  }
-
-  // ---------------------------------------------------------------------------
-  // Paystack card payment — initialize transaction, redirect customer to checkout URL.
-  // PRD 07: intent created (pending → processing), confirmed via handlePaystackWebhook.
-  // ---------------------------------------------------------------------------
-  async takeCard(authContext: AuthContext, billId: string, dto: TakeCardPaymentDto) {
-    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
-
-      const existing = await this.idempotency.findExistingIntent(
-        db,
-        authContext.organizationId,
-        dto.idempotencyKey,
-      )
-      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
-        return existing
-      }
-
-      const surchargeAmount = await this.computeCardSurcharge(db, authContext.organizationId, billId)
-
-      const { credentials } = await this.loadIntegrationCredentials(
-        db,
-        authContext.organizationId,
-        bill.locationId,
-        'paystack',
-      )
-
-      const [intent] = await db
-        .insert(paymentIntents)
-        .values({
-          organizationId: authContext.organizationId,
-          locationId: bill.locationId,
-          orderId: bill.orderId,
-          billId,
-          method: 'card',
-          provider: 'paystack',
+          method,
+          provider,
           amount: dto.amount,
           currency: dto.currency,
           surchargeAmount: surchargeAmount > 0 ? surchargeAmount : null,
           idempotencyKey: dto.idempotencyKey,
+          customerPhone: dto.customerPhone,
           customerEmail: dto.customerEmail,
-          expiresAt: new Date(Date.now() + PAYSTACK_INTENT_TTL_MS),
+          expiresAt: new Date(Date.now() + (ONLINE_PROVIDER_INTENT_TTL_MS[provider] ?? PAYSTACK_INTENT_TTL_MS)),
           processedByActorId: authContext.actorId,
+          metadata,
         })
         .returning()
-      if (!intent) throw new Error('failed to create Paystack payment intent')
+      if (!intent) throw new Error(`failed to create ${provider} payment intent`)
 
-      const adapter = getPaymentAdapter('paystack')
+      const adapter = getPaymentAdapter(provider)
       const result = await adapter.initiatePayment(
         {
           organizationId: authContext.organizationId,
@@ -326,7 +369,8 @@ export class PaymentsService {
           amount: dto.amount,
           currency: dto.currency,
           idempotencyKey: dto.idempotencyKey,
-          customerEmail: dto.customerEmail,
+          ...(dto.customerPhone !== undefined && { customerPhone: dto.customerPhone }),
+          ...(dto.customerEmail !== undefined && { customerEmail: dto.customerEmail }),
         },
         credentials,
       )
@@ -341,7 +385,7 @@ export class PaymentsService {
         })
         .where(eq(paymentIntents.id, intent.id))
         .returning()
-      if (!updated) throw new Error('failed to update Paystack intent to processing')
+      if (!updated) throw new Error(`failed to update ${provider} intent to processing`)
 
       return { ...updated, surchargeAmount, cashAmount: bill.totalAmount }
     })
@@ -355,16 +399,10 @@ export class PaymentsService {
   // ---------------------------------------------------------------------------
   async takeCardTerminal(authContext: AuthContext, billId: string, dto: TakeCardTerminalPaymentDto) {
     const payment = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
+      const idempotent = await this.resolveConfirmedIdempotentRetry(db, authContext.organizationId, dto.idempotencyKey)
+      if (idempotent) return idempotent
 
-      const existing = await this.idempotency.findExistingIntent(
-        db,
-        authContext.organizationId,
-        dto.idempotencyKey,
-      )
-      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
-        return existing
-      }
+      const bill = await this.loadBill(db, authContext.organizationId, billId)
 
       const surchargeAmount = await this.computeCardSurcharge(db, authContext.organizationId, billId)
 
@@ -454,16 +492,10 @@ export class PaymentsService {
   // ---------------------------------------------------------------------------
   async takeBankTransfer(authContext: AuthContext, billId: string, dto: TakeBankTransferPaymentDto) {
     const payment = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
-      const bill = await this.loadBill(db, authContext.organizationId, billId)
+      const idempotent = await this.resolveConfirmedIdempotentRetry(db, authContext.organizationId, dto.idempotencyKey)
+      if (idempotent) return idempotent
 
-      const existing = await this.idempotency.findExistingIntent(
-        db,
-        authContext.organizationId,
-        dto.idempotencyKey,
-      )
-      if (existing && !RETRYABLE_INTENT_STATUSES.has(existing.status)) {
-        return existing
-      }
+      const bill = await this.loadBill(db, authContext.organizationId, billId)
 
       const [intent] = await db
         .insert(paymentIntents)
@@ -545,43 +577,69 @@ export class PaymentsService {
   }
 
   // ---------------------------------------------------------------------------
-  // M-Pesa webhook — unauthenticated provider callback (POST /webhooks/mpesa/:orgId).
-  // PRD 07: 1. verify connection exists, 2. parse ResultCode + CheckoutRequestID,
-  // 3. find intent by providerReference, 4. create payment + settle bill,
-  // 5. Module 18 fraud check (alert only, never block).
+  // Generic online-provider webhook — unauthenticated provider callback
+  // (POST /webhooks/:provider/:orgId), one implementation for every
+  // PaymentAdapter-based provider. 1. verify connection exists, 2. verify
+  // signature/payload via that provider's adapter, 3. find intent by
+  // providerReference, 4. create payment + settle bill + apply any stashed
+  // tip, 5. provider-specific side effects (currently just M-Pesa's Module
+  // 18 fraud check — alert only, never blocks).
   // ---------------------------------------------------------------------------
-  async handleMpesaWebhook(
+  async handleProviderWebhook(
     orgId: string,
+    provider: string,
     rawPayload: string,
     signature: string | undefined,
     headers: Record<string, string>,
   ) {
+    if (!(provider in ONLINE_PROVIDER_METHOD)) {
+      return { status: 'ignored', reason: 'unknown_provider' }
+    }
+
     return withTenantContext(this.pool, orgId, async (db) => {
-      // Load credentials to verify the integration exists (and for potential IP checks).
-      // M-Pesa doesn't HMAC-sign payloads, so we don't decrypt — just confirm the
-      // connection is active for this org before trusting the payload.
-      const conn = await this.findActiveConnection(db, orgId, 'mpesa_daraja')
+      const conn = await this.findActiveConnection(db, orgId, provider)
       if (!conn) {
         return { status: 'ignored', reason: 'integration_not_configured' }
       }
 
-      const adapter = getPaymentAdapter('mpesa_daraja')
-      const result = await adapter.verifyWebhook(
-        { rawPayload, signature: signature ?? '', headers },
-        {},
-      )
+      // Some providers (M-Pesa, Airtel) don't sign payloads at all — their
+      // adapters ignore the credentials argument for verifyWebhook. Passing
+      // real decrypted credentials uniformly (rather than special-casing
+      // which providers need them) keeps this method provider-agnostic.
+      const credentials = JSON.parse(decryptCredentials(conn.credentialsEncrypted)) as Record<string, string>
 
-      if (!result.providerReference) {
+      const adapter = getPaymentAdapter(provider)
+      const result = await adapter.verifyWebhook({ rawPayload, signature: signature ?? '', headers }, credentials)
+
+      if (!result.providerReference || !result.paymentIntentId) {
         return { status: 'ignored', reason: 'no_provider_reference' }
       }
 
+      // Lookup key is result.paymentIntentId, never result.providerReference:
+      // on a successful M-Pesa/Airtel/PesaPal payment, providerReference
+      // switches to the provider's final receipt/settlement reference, which
+      // is *not* what was stored on the intent at creation time (that was
+      // the provider's pre-payment tracking id — CheckoutRequestID,
+      // transaction id, order tracking id). paymentIntentId is each
+      // adapter's contract for "the value to look this intent up by" — for
+      // Paystack/Flutterwave that's literally our own payment_intents.id
+      // (echoed back via metadata we set), for the others it's their
+      // tracking id, matching payment_intents.provider_reference. One OR
+      // handles both shapes without the adapters needing to agree on which.
+      // Postgres throws (not just "no match") comparing a non-UUID string
+      // against a uuid column — only add the `id` branch when the value is
+      // actually UUID-shaped (Paystack/Flutterwave); M-Pesa/Airtel/PesaPal's
+      // tracking-id strings never are, so they rely on the providerReference
+      // branch alone.
       const [intent] = await db
         .select()
         .from(paymentIntents)
         .where(
           and(
             eq(paymentIntents.organizationId, orgId),
-            eq(paymentIntents.providerReference, result.providerReference),
+            UUID_RE.test(result.paymentIntentId)
+              ? or(eq(paymentIntents.id, result.paymentIntentId), eq(paymentIntents.providerReference, result.paymentIntentId))
+              : eq(paymentIntents.providerReference, result.paymentIntentId),
           ),
         )
 
@@ -590,7 +648,7 @@ export class PaymentsService {
       }
 
       if (result.status !== 'confirmed') {
-        // STK push declined or expired by the customer.
+        // Declined, expired, or cancelled by the customer.
         await db
           .update(paymentIntents)
           .set({ status: 'failed', updatedAt: sql`now()` })
@@ -625,21 +683,39 @@ export class PaymentsService {
           processedByActorId: intent.processedByActorId,
         })
         .returning()
-      if (!payment) throw new Error('failed to create payment record from M-Pesa webhook')
+      if (!payment) throw new Error(`failed to create payment record from ${provider} webhook`)
+
+      // Tip captured at takePayment time is only realized once the payment
+      // actually confirms.
+      const tipMeta = intent.metadata as { tipAmount?: number; tipStaffId?: string | null } | null
+      if (tipMeta?.tipAmount && tipMeta.tipAmount > 0) {
+        await db.insert(tips).values({
+          organizationId: orgId,
+          locationId: intent.locationId,
+          paymentId: payment.id,
+          billId: intent.billId,
+          staffId: tipMeta.tipStaffId ?? null,
+          amount: tipMeta.tipAmount,
+          currency: intent.currency,
+        })
+      }
 
       await this.settleBillIfFullyPaid(db, intent.billId, orgId)
 
       // Module 18 fraud check: compare the incoming sender phone and paybill/
       // till number against the org's registered numbers stored in
-      // integration_connections.metadata. Alert only — the payment is confirmed
-      // regardless of the outcome.
-      await this.checkMpesaFraud(db, orgId, intent.locationId, result, payment)
+      // integration_connections.metadata. M-Pesa-specific (STK push doesn't
+      // reuse a merchant paybill/till the way other providers' checkout
+      // flows do) — alert only, never blocks.
+      if (provider === 'mpesa_daraja') {
+        await this.checkMpesaFraud(db, orgId, intent.locationId, result, payment)
+      }
 
       await this.auditLog.record({
         organizationId: orgId,
         locationId: intent.locationId,
         actorType: 'system',
-        action: 'payment.mpesa.confirmed',
+        action: `payment.${provider}.confirmed`,
         entityType: 'payment',
         entityId: payment.id,
         newValue: { providerReference: result.providerReference, amount: intent.amount },
@@ -652,106 +728,228 @@ export class PaymentsService {
   }
 
   // ---------------------------------------------------------------------------
-  // Paystack webhook — unauthenticated provider callback (POST /webhooks/paystack/:orgId).
-  // PRD 07: HMAC-SHA512 signature verification using stored Paystack secret key.
+  // M-Pesa C2B (Paybill/Till manual payment) — a structurally different flow
+  // from STK Push above: the customer dials the M-Pesa menu themselves, so
+  // there's no payment_intent to confirm against. One-time setup per
+  // shortcode registers our Validation/Confirmation URLs with Safaricom.
   // ---------------------------------------------------------------------------
-  async handlePaystackWebhook(
-    orgId: string,
-    rawPayload: string,
-    signature: string | undefined,
-    headers: Record<string, string>,
-  ) {
-    return withTenantContext(this.pool, orgId, async (db) => {
-      // Find the org-wide Paystack connection to get the secret key for HMAC verification.
-      const [orgConn] = await db
-        .select()
-        .from(integrationConnections)
-        .where(
-          and(
-            eq(integrationConnections.organizationId, orgId),
-            isNull(integrationConnections.locationId),
-            eq(integrationConnections.provider, 'paystack'),
-            eq(integrationConnections.status, 'active'),
-          ),
-        )
-
-      if (!orgConn) {
-        return { status: 'ignored', reason: 'integration_not_configured' }
-      }
-
-      const credentials = JSON.parse(decryptCredentials(orgConn.credentialsEncrypted)) as Record<
-        string,
-        string
-      >
-
-      const adapter = getPaymentAdapter('paystack')
-      const result = await adapter.verifyWebhook(
-        { rawPayload, signature: signature ?? '', headers },
-        credentials,
+  async registerMpesaC2b(authContext: AuthContext, dto: RegisterMpesaC2bDto) {
+    return withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const { credentials } = await this.loadIntegrationCredentials(
+        db,
+        authContext.organizationId,
+        dto.locationId ?? authContext.locationId ?? '',
+        'mpesa_daraja',
       )
 
-      if (result.status !== 'confirmed' || !result.providerReference) {
-        return { status: 'ignored', reason: 'verification_failed' }
-      }
+      const baseUrl = process.env['PUBLIC_URL'] ?? 'https://pay.hospitality-os.app'
+      const validationUrl = `${baseUrl}/api/v1/webhooks/mpesa/c2b/validation/${authContext.organizationId}`
+      const confirmationUrl = `${baseUrl}/api/v1/webhooks/mpesa/c2b/confirmation/${authContext.organizationId}`
 
-      const [intent] = await db
-        .select()
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.organizationId, orgId),
-            eq(paymentIntents.providerReference, result.providerReference),
-          ),
-        )
-
-      if (!intent) {
-        return { status: 'ignored', reason: 'intent_not_found' }
-      }
-
-      if (intent.status === 'confirmed') {
-        return { status: 'already_confirmed', intentId: intent.id }
-      }
-
-      await db
-        .update(paymentIntents)
-        .set({ status: 'confirmed', updatedAt: sql`now()` })
-        .where(eq(paymentIntents.id, intent.id))
-
-      const [payment] = await db
-        .insert(payments)
-        .values({
-          organizationId: orgId,
-          locationId: intent.locationId,
-          orderId: intent.orderId,
-          billId: intent.billId,
-          paymentIntentId: intent.id,
-          method: intent.method,
-          provider: intent.provider,
-          providerReference: result.providerReference,
-          amount: intent.amount,
-          currency: intent.currency,
-          idempotencyKey: intent.idempotencyKey,
-          processedByActorId: intent.processedByActorId,
-        })
-        .returning()
-      if (!payment) throw new Error('failed to create payment record from Paystack webhook')
-
-      await this.settleBillIfFullyPaid(db, intent.billId, orgId)
+      const result = await registerMpesaC2BUrls(
+        credentials as unknown as MpesaCredentials,
+        validationUrl,
+        confirmationUrl,
+        dto.responseType ?? 'Completed',
+      )
 
       await this.auditLog.record({
-        organizationId: orgId,
-        locationId: intent.locationId,
-        actorType: 'system',
-        action: 'payment.paystack.confirmed',
-        entityType: 'payment',
-        entityId: payment.id,
-        newValue: { providerReference: result.providerReference, amount: intent.amount },
+        organizationId: authContext.organizationId,
+        locationId: dto.locationId ?? null,
+        actorType: authContext.actorType,
+        actorId: authContext.actorId,
+        action: 'payment.mpesa_c2b.urls_registered',
+        entityType: 'integration_connection',
+        newValue: { validationUrl, confirmationUrl, responseType: dto.responseType ?? 'Completed' },
       })
 
-      await this.emitPaymentConfirmed(db, payment)
-
-      return { status: 'confirmed', paymentId: payment.id }
+      return result
     })
+  }
+
+  // Validation is disabled by default on most shortcodes — Safaricom only
+  // calls this if the merchant separately requested it be enabled. Must
+  // respond fast; by the time this fires, the customer has already entered
+  // their M-Pesa PIN, so this only rejects structurally invalid payloads
+  // (see validateC2BPayload's own comment), never "we don't recognize this."
+  handleMpesaC2bValidation(payload: C2BValidationPayload) {
+    const result = validateC2BPayload(payload)
+    return { ResultCode: result.resultCode === '0' ? 0 : result.resultCode, ResultDesc: result.resultDesc }
+  }
+
+  // Called after the money has already settled — always ACK 200 regardless
+  // of what we do with the payload; Safaricom does not retry based on our
+  // response body here (unlike Validation). Lands in mpesa_c2b_transactions
+  // as 'unmatched' unless billRefNumber happens to be an exact bill/order id
+  // (e.g. a QR receipt that told the customer to use their order id as the
+  // Paybill account reference) — the common case needs a human, since a Till
+  // payment carries no reference at all and a Paybill one is free-text a
+  // customer can mistype.
+  async handleMpesaC2bConfirmation(orgId: string, payload: C2BValidationPayload) {
+    return withTenantContext(this.pool, orgId, async (db) => {
+      if (!payload.TransID || !payload.MSISDN || !payload.TransAmount || !payload.BusinessShortCode) {
+        return { ResultCode: 0, ResultDesc: 'Confirmation received successfully' }
+      }
+
+      const amount = Math.round(Number(payload.TransAmount))
+      const transTime = parseC2bTransTime(payload.TransTime)
+
+      const [existing] = await db
+        .select({ id: mpesaC2bTransactions.id })
+        .from(mpesaC2bTransactions)
+        .where(and(eq(mpesaC2bTransactions.organizationId, orgId), eq(mpesaC2bTransactions.transId, payload.TransID)))
+      if (existing) {
+        // Safaricom retries Confirmation delivery on timeout — already recorded, just re-ack.
+        return { ResultCode: 0, ResultDesc: 'Confirmation received successfully' }
+      }
+
+      const [txn] = await db
+        .insert(mpesaC2bTransactions)
+        .values({
+          organizationId: orgId,
+          transType: payload.TransactionType ?? 'Pay Bill',
+          transId: payload.TransID,
+          transTime,
+          transAmount: amount,
+          businessShortCode: payload.BusinessShortCode,
+          billRefNumber: payload.BillRefNumber ?? null,
+          invoiceNumber: payload.InvoiceNumber ?? null,
+          orgAccountBalance: payload.OrgAccountBalance ?? null,
+          msisdn: payload.MSISDN,
+          firstName: payload.FirstName ?? null,
+          middleName: payload.MiddleName ?? null,
+          lastName: payload.LastName ?? null,
+          rawPayload: payload as unknown as Record<string, unknown>,
+        })
+        .returning()
+      if (!txn) throw new Error('failed to record M-Pesa C2B transaction')
+
+      const ref = payload.BillRefNumber?.trim()
+      if (ref && UUID_RE.test(ref)) {
+        let bill = await this.ordersService.getBillById(db, orgId, ref).catch(() => null)
+        if (!bill) {
+          const order = await this.ordersService.getOrderById(db, orgId, ref).catch(() => null)
+          if (order) bill = await this.ordersService.getOpenBillForOrder(db, orgId, order.id)
+        }
+        if (bill && bill.status !== 'paid' && bill.status !== 'voided') {
+          await this.recordC2bPaymentToBill(db, orgId, txn, bill, null)
+        }
+      }
+
+      return { ResultCode: 0, ResultDesc: 'Confirmation received successfully' }
+    })
+  }
+
+  // Staff-facing reconciliation: every unmatched C2B transaction for the org,
+  // newest first, for a cashier/manager to eyeball against open bills (amount
+  // + rough timing + customer name is usually enough to tell).
+  async listUnmatchedMpesaC2b(authContext: AuthContext) {
+    return withTenantContext(this.pool, authContext.organizationId, (db) =>
+      db
+        .select()
+        .from(mpesaC2bTransactions)
+        .where(and(eq(mpesaC2bTransactions.organizationId, authContext.organizationId), eq(mpesaC2bTransactions.status, 'unmatched')))
+        .orderBy(desc(mpesaC2bTransactions.transTime)),
+    )
+  }
+
+  async matchMpesaC2b(authContext: AuthContext, transactionId: string, dto: MatchMpesaC2bDto) {
+    const result = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
+      const [txn] = await db
+        .select()
+        .from(mpesaC2bTransactions)
+        .where(and(eq(mpesaC2bTransactions.id, transactionId), eq(mpesaC2bTransactions.organizationId, authContext.organizationId)))
+      if (!txn) throw new NotFoundException('M-Pesa C2B transaction not found')
+      if (txn.status !== 'unmatched') {
+        throw new BadRequestException({ code: 'already_matched', message: `transaction is already ${txn.status}` })
+      }
+
+      const bill = await this.loadBill(db, authContext.organizationId, dto.billId)
+      const payment = await this.recordC2bPaymentToBill(db, authContext.organizationId, txn, bill, authContext.actorId)
+      return { transaction: txn, payment }
+    })
+
+    await this.auditLog.record({
+      organizationId: authContext.organizationId,
+      actorType: authContext.actorType,
+      actorId: authContext.actorId,
+      action: 'payment.mpesa_c2b.matched',
+      entityType: 'payment',
+      entityId: result.payment.id,
+      newValue: { transactionId, billId: dto.billId, amount: result.transaction.transAmount },
+    })
+
+    return result
+  }
+
+  // Shared by both the auto-match attempt (confirmation webhook) and the
+  // staff manual-match endpoint: records a real payments row (there was no
+  // prior payment_intent, so one is created here, immediately confirmed —
+  // same "retroactive intent" shape cash payments use) and marks the C2B
+  // transaction row settled. actorId is null for an automatic match.
+  private async recordC2bPaymentToBill(
+    db: Db,
+    organizationId: string,
+    txn: typeof mpesaC2bTransactions.$inferSelect,
+    bill: { id: string; locationId: string; orderId: string; currency: string },
+    actorId: string | null,
+  ) {
+    const [intent] = await db
+      .insert(paymentIntents)
+      .values({
+        organizationId,
+        locationId: bill.locationId,
+        orderId: bill.orderId,
+        billId: bill.id,
+        method: 'mpesa',
+        provider: 'mpesa_daraja',
+        amount: txn.transAmount,
+        currency: txn.currency,
+        status: 'confirmed',
+        idempotencyKey: `c2b-${txn.transId}`,
+        providerReference: txn.transId,
+        customerPhone: txn.msisdn,
+        processedByActorId: actorId,
+      })
+      .returning()
+    if (!intent) throw new Error('failed to create payment intent for C2B transaction')
+
+    const [payment] = await db
+      .insert(payments)
+      .values({
+        organizationId,
+        locationId: bill.locationId,
+        orderId: bill.orderId,
+        billId: bill.id,
+        paymentIntentId: intent.id,
+        method: 'mpesa',
+        provider: 'mpesa_daraja',
+        providerReference: txn.transId,
+        amount: txn.transAmount,
+        currency: txn.currency,
+        idempotencyKey: `c2b-${txn.transId}`,
+        processedByActorId: actorId,
+      })
+      .returning()
+    if (!payment) throw new Error('failed to create payment record for C2B transaction')
+
+    await db
+      .update(mpesaC2bTransactions)
+      .set({
+        status: 'matched',
+        locationId: bill.locationId,
+        matchedBillId: bill.id,
+        matchedPaymentId: payment.id,
+        matchedByActorId: actorId,
+        matchedAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(mpesaC2bTransactions.id, txn.id))
+
+    await this.settleBillIfFullyPaid(db, bill.id, organizationId)
+    await this.emitPaymentConfirmed(db, payment)
+
+    return payment
   }
 
   // ---------------------------------------------------------------------------

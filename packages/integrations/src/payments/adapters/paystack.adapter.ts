@@ -188,16 +188,62 @@ export class PaystackAdapter implements PaymentAdapter {
 
   async initiateRefund(
     input: PaymentRefundInput,
-    _credentials: ConnectionCredentials,
+    credentials: ConnectionCredentials,
   ): Promise<PaymentRefundResult> {
-    // Paystack refund API availability varies by account type and market.
-    // Upgrade path: when Paystack confirms refund API access, implement
-    // POST /refund with { transaction: providerReference, amount }.
-    return {
-      requiresManualSettlement: true,
-      message:
-        `Paystack refunds require manual processing for this account. ` +
-        `Contact Paystack support with transaction reference: ${input.providerReference}`,
+    const creds = credentials as unknown as PaystackCredentials
+
+    try {
+      const response = await fetch(`${PAYSTACK_BASE_URL}/refund`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${creds.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          transaction: input.providerReference,
+          amount: input.amount,
+          currency: input.currency,
+          merchant_note: input.reason,
+        }),
+      })
+
+      if (!response.ok) {
+        const text = await response.text()
+        // Not every Paystack account/market has refund API access enabled —
+        // fall back to manual settlement rather than surfacing a hard error.
+        return {
+          requiresManualSettlement: true,
+          message: `Paystack refund request failed (HTTP ${response.status}): ${text}. Contact Paystack support with transaction reference: ${input.providerReference}`,
+        }
+      }
+
+      const data = (await response.json()) as {
+        status: boolean
+        message: string
+        data?: { id?: number; status?: string }
+      }
+
+      if (!data.status) {
+        return {
+          requiresManualSettlement: true,
+          message: `Paystack refund rejected: ${data.message}. Contact Paystack support with transaction reference: ${input.providerReference}`,
+        }
+      }
+
+      return {
+        // Paystack refunds are asynchronous ("processing" → "processed") even
+        // on success — not settled immediately, but no manual merchant action
+        // is required, so this doesn't count as requiresManualSettlement.
+        requiresManualSettlement: false,
+        message: data.message,
+        ...(data.data?.id !== undefined && { providerReference: String(data.data.id) }),
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        requiresManualSettlement: true,
+        message: `Paystack refund encountered an error: ${message}. Contact Paystack support with transaction reference: ${input.providerReference}`,
+      }
     }
   }
 }

@@ -36,7 +36,11 @@ function walk(dir: string, predicate: (file: string) => boolean): string[] {
 // --- 1. Build the table registry: camelCase export name -> snake_case table name.
 const schemaFiles = walk(schemaDir, (f) => f.endsWith('.ts'))
 const tableExportToName = new Map<string, string>()
-const pgTablePattern = /export const (\w+) = pgTable\(\s*['"]([a-z_]+)['"]/g
+// [a-z0-9_]+, not [a-z_]+: Postgres identifiers can contain digits
+// (e.g. mpesa_c2b_transactions) — a bare [a-z_]+ silently fails to match
+// any such table name, which previously went unnoticed because no table
+// name happened to contain a digit until this one.
+const pgTablePattern = /export const (\w+) = pgTable\(\s*['"]([a-z0-9_]+)['"]/g
 for (const file of schemaFiles) {
   const content = readFileSync(file, 'utf8')
   for (const match of content.matchAll(pgTablePattern)) {

@@ -1,0 +1,1 @@
+ALTER TABLE "mpesa_c2b_transactions" ALTER COLUMN "location_id" DROP NOT NULL;

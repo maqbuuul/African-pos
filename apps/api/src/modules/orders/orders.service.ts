@@ -1149,7 +1149,7 @@ export class OrdersService {
     db: Db,
     params: { organizationId: string; locationId: string; tableId: string; currency: string },
     items: { productId: string; quantity: number; modifierIds?: string[]; notes?: string; sessionLabel?: string }[],
-  ): Promise<{ order: OrderRow; items: OrderItemRow[]; bill: BillRow }> {
+  ): Promise<{ order: OrderRow; items: OrderItemRow[] }> {
     const [order] = await db
       .insert(orders)
       .values({
@@ -1210,26 +1210,15 @@ export class OrdersService {
       createdItems.push(oi)
     }
 
-    const [bill] = await db
-      .insert(bills)
-      .values({
-        organizationId: params.organizationId,
-        locationId: params.locationId,
-        orderId: order.id,
-        billNumber: 1,
-        status: 'open',
-        currency: params.currency,
-        subtotalAmount: 0,
-        discountAmount: 0,
-        taxAmount: 0,
-        serviceChargeAmount: 0,
-        tipAmount: 0,
-        totalAmount: 0,
-      })
-      .returning()
-    if (!bill) throw new Error('failed to create bill')
+    // No bill is created here — request-bill is the single bill-creation path
+    // (see requestBillInTx's own comment) so a bill's totals/billItems are
+    // always populated from real order data, never left at zero. Totals do
+    // need to be correct immediately, though, so the customer's cart view
+    // reflects real prices before they ever request the bill.
+    await this.recomputeOrderTotals(db, params.organizationId, order.id)
+    const freshOrder = await this.loadOrder(db, params.organizationId, order.id)
 
-    return { order, items: createdItems, bill }
+    return { order: freshOrder, items: createdItems }
   }
 
   async getOrderItemById(db: Db, organizationId: string, orderItemId: string): Promise<OrderItemRow> {
@@ -1341,10 +1330,16 @@ export class OrdersService {
     return withTenantContext(this.pool, authContext.organizationId, async (db) => {
       const order = await this.loadOrder(db, authContext.organizationId, orderId)
 
+      // sessionLabel, not course: `course` is the staff-POS/KDS kitchen-display
+      // grouping field (set via AddOrderItemDto, never exposed to QR
+      // customers). `sessionLabel` is the field QR ordering actually lets a
+      // customer set per item (see 0020_reconcile_schema_drift.sql — "QR
+      // ordering per-item labels (order_items.session_label)") — filtering on
+      // `course` here meant no QR-submitted item could ever match.
       const toFire = await db
         .select()
         .from(orderItems)
-        .where(and(eq(orderItems.orderId, orderId), eq(orderItems.status, 'draft'), eq(orderItems.course, courseName)))
+        .where(and(eq(orderItems.orderId, orderId), eq(orderItems.status, 'draft'), eq(orderItems.sessionLabel, courseName)))
       if (toFire.length === 0) {
         throw new BadRequestException({ code: 'no_items_for_course', message: `no draft items found for course "${courseName}"` })
       }
@@ -1380,32 +1375,87 @@ export class OrdersService {
       throw new BadRequestException({ code: 'invalid_status_transition', message: `cannot request bill from status ${fromStatus}` })
     }
 
+    // recomputeOrderTotals runs on every item mutation, so `order` here may
+    // still be a pre-mutation snapshot — re-derive from order_items directly
+    // rather than trusting order.subtotalAmount/totalAmount.
     const [existingBill] = await db
       .select()
       .from(bills)
       .where(and(eq(bills.orderId, order.id), eq(bills.organizationId, organizationId), eq(bills.status, 'open')))
-    if (!existingBill) {
-      const [newBill] = await db
-        .insert(bills)
-        .values({
+
+    const bill =
+      existingBill ??
+      (
+        await db
+          .insert(bills)
+          .values({
+            organizationId,
+            locationId,
+            orderId: order.id,
+            billNumber: 1,
+            status: 'open',
+            currency: order.currency,
+            subtotalAmount: 0,
+            discountAmount: 0,
+            taxAmount: 0,
+            serviceChargeAmount: 0,
+            tipAmount: 0,
+            totalAmount: 0,
+          })
+          .returning()
+      )[0]
+    if (!bill) throw new Error('failed to create bill')
+
+    await this.linkUnbilledItemsAndRecomputeBillTotals(db, organizationId, order.id, bill.id)
+    await db.update(orders).set({ status: 'bill_requested' }).where(eq(orders.id, order.id))
+  }
+
+  // Links every non-voided order_item not yet attached to any bill for this
+  // order onto the given bill (billItems is a join, never a copy — see
+  // packages/database/src/schema/restaurant/index.ts), then recomputes the
+  // bill's totals from what's actually linked. Idempotent: safe to call
+  // whether the bill was just created or already existed.
+  private async linkUnbilledItemsAndRecomputeBillTotals(
+    db: Db,
+    organizationId: string,
+    orderId: string,
+    billId: string,
+  ): Promise<void> {
+    const items = await db
+      .select()
+      .from(orderItems)
+      .where(and(eq(orderItems.orderId, orderId), eq(orderItems.organizationId, organizationId), ne(orderItems.status, 'voided')))
+
+    const alreadyLinked = await db
+      .select({ orderItemId: billItems.orderItemId })
+      .from(billItems)
+      .innerJoin(bills, eq(billItems.billId, bills.id))
+      .where(and(eq(bills.orderId, orderId), eq(bills.organizationId, organizationId)))
+    const linkedIds = new Set(alreadyLinked.map((row) => row.orderItemId))
+
+    const unlinked = items.filter((item) => !linkedIds.has(item.id))
+    if (unlinked.length) {
+      await db.insert(billItems).values(
+        unlinked.map((item) => ({
           organizationId,
-          locationId,
-          orderId: order.id,
-          billNumber: 1,
-          status: 'open',
-          currency: order.currency,
-          subtotalAmount: order.subtotalAmount,
-          discountAmount: order.discountAmount,
-          taxAmount: order.taxAmount,
-          serviceChargeAmount: order.serviceChargeAmount,
-          tipAmount: 0,
-          totalAmount: order.totalAmount,
-        })
-        .returning()
-      if (!newBill) throw new Error('failed to create bill')
+          billId,
+          orderItemId: item.id,
+          allocatedAmount: item.totalAmount - item.discountAmount,
+          currency: item.currency,
+        })),
+      )
     }
 
-    await db.update(orders).set({ status: 'bill_requested' }).where(eq(orders.id, order.id))
+    const linkedForThisBill = await db
+      .select({ allocatedAmount: billItems.allocatedAmount })
+      .from(billItems)
+      .where(and(eq(billItems.billId, billId), eq(billItems.organizationId, organizationId)))
+    const subtotalAmount = linkedForThisBill.reduce((sum, row) => sum + row.allocatedAmount, 0)
+
+    await db
+      .update(bills)
+      .set({ subtotalAmount, totalAmount: subtotalAmount })
+      .where(eq(bills.id, billId))
   }
 
   // Best-effort nudge toward a payable state when a customer opts to pay at
