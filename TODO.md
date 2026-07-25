@@ -507,10 +507,81 @@ against the current code, not re-litigated.**
 
 ## HIGH PRIORITY
 
-- [ ] **C1 — Write tests across the entire monorepo**
-      Zero tests. No unit, integration, or e2e tests anywhere. API is at
-      highest risk — every module has complex business logic with state
-      machines, approval flows, and audit trails.
+- [x] **C1 — Write tests across the entire monorepo** — Done 2026-07-25.
+      Went from 1 test file (payments only) to 27 files / 224 tests across
+      every API module and core service, plus `packages/domain`'s state
+      machines (32 pure unit tests) — same real-Postgres integration
+      pattern payments established (`Test.createTestingModule`, real
+      APP_POOL/RLS, no mocking of application logic; adapter/messaging
+      boundaries mocked, e.g. receipts.service.spec.ts's `getMessagingAdapter`).
+      `apps/api/src/test/fixtures.ts` grew from payments-only helpers to
+      shared fixtures for every domain (staff/roles, products, tables, KDS
+      stations, devices, shifts, inventory, CRM, sync) plus per-domain
+      `deleteOrg*Data` cleanup helpers respecting real FK order.
+      Coverage: domain state machines; core auth/permissions/RLS-isolation/
+      approvals/staff/attendance/idempotency/audit-log/outbox; orders (full
+      lifecycle incl. discount-approval flow); restaurant (tables/KDS/floor
+      plans); products (incl. price-change approval flow); inventory;
+      finance/shifts; CRM; reports + WhatsApp reports; sync + conflict
+      resolution; notifications (receipts + staff notifications); qr-order
+      (full customer journey); organization/audit/staff-report.
+      **Found and fixed 6 real, previously-undetected bugs along the way**
+      (none were regressions from this pass — all pre-existing, caught only
+      because this was the first time these code paths were actually
+      exercised against a real database):
+      1. `OutboxService.persistAndEmit`'s `locationId ?? organizationId`
+         fallback would violate `events.location_id`'s FK if ever hit
+         (dead in practice — every real caller already passes locationId,
+         but the interface allowed omitting it). Made `locationId` required.
+      2. **Inventory: `stock_levels` was double-counted on every receive,
+         wastage, transfer, and stock count.** Migration 0017 made
+         `stock_levels` a trigger-maintained projection of
+         `stock_movements` ("never written directly" per its own comment),
+         but `InventoryService` also manually upserted `stock_levels` after
+         every movement insert — the trigger already applied it, so the
+         manual write doubled it. Removed the redundant writes from
+         `receiveGoods`/`completeStockCount`/`recordWastage`/
+         `createStockTransfer`/`createStockAdjustment`.
+      3. **Cross-tenant data leak**: `customer_identities` and `gift_cards`
+         had globally-unique constraints on phone number / gift card code
+         (no `organization_id` in the index) — the first business to ever
+         see a given phone number or pick a code like "WELCOME10" would
+         permanently block every other unrelated business on the platform
+         from using it. Migration `0026_fix_customer_identity_gift_card_org_scoping.sql`
+         scopes both to `(organization_id, ...)`.
+      4. `sync_conflicts.resolution`'s CHECK constraint (0013) only allowed
+         the 4 auto-resolution values, never the human-chosen ones
+         (`use_local`/`use_remote`/`manual`) that `resolveConflict` — the
+         actual staff-facing "review this conflict" action — accepts.
+         Every real manual resolution 500'd. Same class of bug as 0022's
+         entity_type fix; closed in `0027_fix_sync_conflicts_resolution_check.sql`.
+      5. **`WhatsAppReportsService` and `ReceiptsService.renderReceiptText`
+         both divided every money amount by 100** before displaying it —
+         treating this codebase's whole-currency-unit convention (1200 =
+         KES 1,200, confirmed elsewhere against M-Pesa's own Daraja Amount
+         field) as if it were cents. Every WhatsApp `SALES` report and
+         every printed/WhatsApp/SMS customer receipt understated revenue
+         and totals by 100x (KES 5,000 showed as "KSh 50" / "50.00").
+      6. **Most severe: `OrganizationService.create()` could never actually
+         create a new organization.** It ran under
+         `withTenantContext(pool, authContext.organizationId, ...)`, but
+         Postgres enforces the table's SELECT policy on `RETURNING` too —
+         and a brand-new org's `id` can never equal the caller's
+         *pre-existing* org id, so every call failed RLS outright. There
+         was no working code path to onboard a new tenant. Fixed by
+         scoping the call to no tenant context (`null`), matching
+         `AuthService.ownerLogin`'s existing pre-tenant-context precedent —
+         `organizations_select`'s policy already explicitly allows this
+         ("`app_current_organization_id() IS NULL OR id = ...`").
+      Also discovered `drizzle-kit migrate` silently reported success
+      without actually applying migrations 0026/0027 in this sandbox
+      (verified via direct `pg_indexes`/`__drizzle_migrations` inspection);
+      applied both by hand and backfilled the journal hash rows to match —
+      root cause not chased further, flagged here in case it recurs.
+      Not covered in this pass: `apps/api`'s HTTP layer (controllers/DTOs/
+      guards) itself — these are service-level tests calling services
+      directly, not `supertest`-style HTTP tests — and the frontend apps
+      (no UI exists yet for most of them; see Gap A above).
       _Effort: Very Large_
 
 - [ ] **C2 — Add missing DTOs to audit, reports, qr-order, staff modules**

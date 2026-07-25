@@ -423,23 +423,28 @@ export class ReceiptsService {
     lines.push(`Receipt: ${input.receiptNumber}`)
     if (input.kraPin) lines.push(`KRA PIN: ${input.kraPin}`)
     if (input.etrSerial) lines.push(`ETR: ${input.etrSerial}`)
+    // Every amount here (order_items/bills/payments) is already a whole
+    // currency unit throughout this codebase (e.g. 1200 = KES 1,200,
+    // confirmed against M-Pesa Daraja's own Amount field) — dividing by 100
+    // treated it as cents and understated every printed/sent receipt by
+    // 100x, the same class of bug fixed in whatsapp-reports.service.ts.
     lines.push('-'.repeat(40))
     for (const item of input.items) {
       lines.push(`${item.quantity}x ${item.name}`)
-      lines.push(`    ${(item.unitPrice / 100).toFixed(2)} x ${item.quantity} = ${(item.totalPrice / 100).toFixed(2)} ${input.currency}`)
+      lines.push(`    ${item.unitPrice.toFixed(2)} x ${item.quantity} = ${item.totalPrice.toFixed(2)} ${input.currency}`)
     }
     lines.push('---')
-    lines.push(`Subtotal:    ${(input.subtotalAmount / 100).toFixed(2)} ${input.currency}`)
-    if (input.discountAmount > 0) lines.push(`Discount:    -${(input.discountAmount / 100).toFixed(2)} ${input.currency}`)
-    if (input.taxAmount > 0) lines.push(`Tax:         ${(input.taxAmount / 100).toFixed(2)} ${input.currency}`)
-    if (input.serviceChargeAmount > 0) lines.push(`Service:     ${(input.serviceChargeAmount / 100).toFixed(2)} ${input.currency}`)
-    if (input.tipAmount > 0) lines.push(`Tip:         ${(input.tipAmount / 100).toFixed(2)} ${input.currency}`)
+    lines.push(`Subtotal:    ${input.subtotalAmount.toFixed(2)} ${input.currency}`)
+    if (input.discountAmount > 0) lines.push(`Discount:    -${input.discountAmount.toFixed(2)} ${input.currency}`)
+    if (input.taxAmount > 0) lines.push(`Tax:         ${input.taxAmount.toFixed(2)} ${input.currency}`)
+    if (input.serviceChargeAmount > 0) lines.push(`Service:     ${input.serviceChargeAmount.toFixed(2)} ${input.currency}`)
+    if (input.tipAmount > 0) lines.push(`Tip:         ${input.tipAmount.toFixed(2)} ${input.currency}`)
     lines.push('---')
-    lines.push(`TOTAL:       ${(input.totalAmount / 100).toFixed(2)} ${input.currency}`)
+    lines.push(`TOTAL:       ${input.totalAmount.toFixed(2)} ${input.currency}`)
     lines.push('')
     lines.push('Payments:')
     for (const p of input.payments) {
-      lines.push(`  ${p.method}: ${(p.amount / 100).toFixed(2)} ${input.currency}${p.reference ? ` (ref: ${p.reference})` : ''}`)
+      lines.push(`  ${p.method}: ${p.amount.toFixed(2)} ${input.currency}${p.reference ? ` (ref: ${p.reference})` : ''}`)
     }
     lines.push('')
     lines.push(`Paid at: ${new Date(input.paidAt).toLocaleString()}`)

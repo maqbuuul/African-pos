@@ -15,7 +15,7 @@ export class OutboxService {
   async persistAndEmit(db: Db, event: DomainEvent): Promise<void> {
     await db.insert(events).values({
       organizationId: event.organizationId,
-      locationId: event.locationId ?? event.organizationId,
+      locationId: event.locationId,
       eventType: event.eventType,
       entityType: event.entityType,
       entityId: event.entityId,

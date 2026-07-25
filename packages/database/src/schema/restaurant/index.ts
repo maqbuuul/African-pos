@@ -1243,7 +1243,11 @@ export const customerIdentities = pgTable('customer_identities', {
 }, (table) => [
   index('customer_identities_organization_id_idx').on(table.organizationId),
   index('customer_identities_customer_id_idx').on(table.customerId),
-  uniqueIndex('customer_identities_type_value_key').on(table.identityType, table.identityValue),
+  // Scoped by organizationId — a phone/email identity is only unique within
+  // one tenant's customer list, not across every unrelated business sharing
+  // this platform (a global unique index here would mean the first business
+  // to ever see a given phone number permanently claims it platform-wide).
+  uniqueIndex('customer_identities_org_type_value_key').on(table.organizationId, table.identityType, table.identityValue),
 ])
 
 export const customerTags = pgTable('customer_tags', {
@@ -1322,7 +1326,9 @@ export const giftCards = pgTable('gift_cards', {
   ...timestamps,
 }, (table) => [
   index('gift_cards_organization_id_idx').on(table.organizationId),
-  uniqueIndex('gift_cards_code_key').on(table.code),
+  // Scoped by organizationId, same reasoning as customer_identities above —
+  // two unrelated businesses must each be free to pick "WELCOME10".
+  uniqueIndex('gift_cards_org_code_key').on(table.organizationId, table.code),
   check('gift_cards_status_check', enumCheck(table.status, GiftCardStatusSchema.options)),
 ])
 

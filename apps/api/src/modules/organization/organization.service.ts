@@ -34,7 +34,16 @@ export class OrganizationService {
   }
 
   async create(authContext: AuthContext, dto: CreateOrganizationDto) {
-    const row = await withTenantContext(this.pool, authContext.organizationId, async (db) => {
+    // Deliberately no tenant context (matches AuthService.ownerLogin's one
+    // other pre-tenant-context case): a brand-new organization's id can
+    // never match an existing app_current_organization_id(), and Postgres
+    // enforces the SELECT policy on a RETURNING clause too — so scoping
+    // this to authContext.organizationId (the caller's *existing* org, not
+    // the one being created) made every call fail RLS outright, with no
+    // working way to ever create a new tenant. organizations_select's
+    // policy explicitly allows this: "app_current_organization_id() IS
+    // NULL OR id = app_current_organization_id()".
+    const row = await withTenantContext(this.pool, null, async (db) => {
       const [created] = await db
         .insert(organizations)
         .values({

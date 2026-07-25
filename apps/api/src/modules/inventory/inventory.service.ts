@@ -294,17 +294,10 @@ export class InventoryService {
           movedAt: now,
         }).returning()
         if (movement) await this.emitStockMovementRecorded(db, movement)
-        await db.insert(stockLevels).values({
-          organizationId: auth.organizationId,
-          locationId: po.locationId,
-          inventoryItemId: item.inventoryItemId,
-          stockLocationId,
-          quantity: receivedQty,
-          unit: item.unit,
-        }).onConflictDoUpdate({
-          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-          set: { quantity: sql`${stockLevels.quantity} + ${receivedQty}`, updatedAt: now },
-        })
+        // stock_levels is a trigger-maintained projection of stock_movements
+        // (trg_maintain_stock_levels, 0017_p12_stock_levels_projection.sql —
+        // "never written directly") — the movement insert above already
+        // applied this quantity; writing it again here would double-count it.
       }
 
       await db.insert(goodsReceipts).values({
@@ -375,18 +368,10 @@ export class InventoryService {
           approvedAt: isLarge ? null : now,
         })
 
-        await db.insert(stockLevels).values({
-          organizationId: auth.organizationId,
-          locationId: sc.locationId,
-          inventoryItemId: item.inventoryItemId,
-          stockLocationId: sc.stockLocationId,
-          quantity: counted,
-          unit: level?.unit ?? 'piece',
-        }).onConflictDoUpdate({
-          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-          set: { quantity: counted, updatedAt: now },
-        })
-
+        // stock_levels is a trigger-maintained projection of stock_movements
+        // (see receiveGoods's comment above) — the 'adjustment' movement's
+        // quantity=variance below already drives stock_levels from expected
+        // to counted (expected + variance === counted) via the trigger.
         const [movement] = await db.insert(stockMovements).values({
           organizationId: auth.organizationId,
           locationId: sc.locationId,
@@ -494,18 +479,8 @@ export class InventoryService {
         movedByActorId: auth.actorId,
       }).returning()
       if (movement) await this.emitStockMovementRecorded(db, movement)
-
-      await db.insert(stockLevels).values({
-        organizationId: auth.organizationId,
-        locationId: auth.locationId ?? '',
-        inventoryItemId: dto.inventoryItemId,
-        stockLocationId: dto.stockLocationId,
-        quantity: -Math.abs(dto.quantity),
-        unit: dto.unit,
-      }).onConflictDoUpdate({
-        target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-        set: { quantity: sql`${stockLevels.quantity} - ${Math.abs(dto.quantity)}`, updatedAt: new Date() },
-      })
+      // stock_levels is a trigger-maintained projection (see receiveGoods's
+      // comment above) — the movement insert already applied this deduction.
 
       return evts[0]
     })
@@ -549,30 +524,9 @@ export class InventoryService {
           movedByActorId: auth.actorId,
           movedAt: now,
         })
-
-        await db.insert(stockLevels).values({
-          organizationId: auth.organizationId,
-          locationId: auth.locationId ?? '',
-          inventoryItemId: item.inventoryItemId,
-          stockLocationId: dto.sourceLocationId,
-          quantity: -Math.abs(item.quantity),
-          unit: item.unit,
-        }).onConflictDoUpdate({
-          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-          set: { quantity: sql`${stockLevels.quantity} - ${Math.abs(item.quantity)}`, updatedAt: now },
-        })
-
-        await db.insert(stockLevels).values({
-          organizationId: auth.organizationId,
-          locationId: auth.locationId ?? '',
-          inventoryItemId: item.inventoryItemId,
-          stockLocationId: dto.destLocationId,
-          quantity: Math.abs(item.quantity),
-          unit: item.unit,
-        }).onConflictDoUpdate({
-          target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-          set: { quantity: sql`${stockLevels.quantity} + ${Math.abs(item.quantity)}`, updatedAt: now },
-        })
+        // stock_levels is a trigger-maintained projection (see receiveGoods's
+        // comment above) — the transfer_out/transfer_in movements inserted
+        // below already apply both sides of this transfer.
       }
 
       if (movements.length) {
@@ -649,17 +603,9 @@ export class InventoryService {
         movedAt: now,
       }).returning()
       if (movement) await this.emitStockMovementRecorded(db, movement)
-      await db.insert(stockLevels).values({
-        organizationId: auth.organizationId,
-        locationId: auth.locationId ?? '',
-        inventoryItemId: dto.inventoryItemId,
-        stockLocationId: dto.stockLocationId,
-        quantity: dto.newQuantity,
-        unit: level?.unit ?? item.unit,
-      }).onConflictDoUpdate({
-        target: [stockLevels.inventoryItemId, stockLevels.stockLocationId],
-        set: { quantity: dto.newQuantity, updatedAt: now },
-      })
+      // stock_levels is a trigger-maintained projection (see receiveGoods's
+      // comment above) — currentQty + variance === dto.newQuantity, so the
+      // movement insert already lands stock_levels on the intended value.
       return { inventoryItemId: dto.inventoryItemId, stockLocationId: dto.stockLocationId, previousQuantity: currentQty, newQuantity: dto.newQuantity, variance }
     })
   }

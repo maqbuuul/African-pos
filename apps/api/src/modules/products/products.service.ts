@@ -369,6 +369,14 @@ export class ProductsService {
         .where(and(eq(products.id, id), eq(products.organizationId, authContext.organizationId)))
       if (!existing) throw new NotFoundException('product not found')
 
+      // product_prices.product_id is onDelete:'restrict' — every product
+      // created via create() above always has at least one price-history
+      // row, so this delete would otherwise always fail with a raw FK
+      // violation instead of ever actually deleting a product. Price
+      // history is pure bookkeeping with no external references of its own
+      // (unlike order_items.product_id, also restrict, which correctly
+      // keeps blocking deletion of a product with real order history).
+      await db.delete(productPrices).where(eq(productPrices.productId, id))
       await db.delete(products).where(eq(products.id, id))
     })
   }

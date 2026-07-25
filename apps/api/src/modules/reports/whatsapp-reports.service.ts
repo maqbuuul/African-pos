@@ -44,8 +44,12 @@ export class WhatsAppReportsService {
       ])
       const revenue = Number(revenueRow[0]?.total ?? 0)
       const orders_ = Number(orderCount[0]?.count ?? 0)
+      // bills.totalAmount is already whole currency units throughout this
+      // codebase (e.g. 1200 = KES 1,200, confirmed against M-Pesa Daraja's
+      // own Amount field) — dividing by 100 here treated it as cents and
+      // understated every WhatsApp sales report by 100x.
       return {
-        text: `📊 *Today's Sales*\nRevenue: KSh ${(revenue / 100).toLocaleString()}\nOrders: ${orders_}\nAvg: KSh ${orders_ > 0 ? ((revenue / orders_) / 100).toLocaleString() : 0}`,
+        text: `📊 *Today's Sales*\nRevenue: KSh ${revenue.toLocaleString()}\nOrders: ${orders_}\nAvg: KSh ${orders_ > 0 ? Math.round(revenue / orders_).toLocaleString() : 0}`,
       }
     })
   }

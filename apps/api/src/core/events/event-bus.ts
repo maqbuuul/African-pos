@@ -4,7 +4,11 @@ import { EventEmitter } from 'events'
 export interface DomainEvent {
   eventType: string
   organizationId: string
-  locationId?: string
+  // events.location_id is NOT NULL (packages/database/src/schema/analytics/index.ts)
+  // — every real emitter already has one to hand, so this stays required
+  // rather than silently falling back to organizationId (which is never a
+  // valid location id and would violate the FK).
+  locationId: string
   entityType: string
   entityId: string
   data?: Record<string, unknown>
