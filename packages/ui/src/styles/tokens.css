@@ -1,0 +1,162 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens per docs/architecture/frontend-design-system.md.
+ * Status colors are fixed semantics, never decorative — see that doc's
+ * "Design Tokens" section. `--ui-primary` is a separate brand/action color
+ * so buttons/links never get confused with a status meaning.
+ *
+ * `@theme inline` maps utility classes (bg-status-healthy, text-primary, …)
+ * to these CSS variables at *use* time rather than inlining their values,
+ * so dark mode / density stay runtime-switchable via the selectors below
+ * instead of needing a second Tailwind build.
+ */
+@theme inline {
+  --color-bg: var(--ui-bg);
+  --color-surface: var(--ui-surface);
+  --color-surface-2: var(--ui-surface-2);
+  --color-ink: var(--ui-ink);
+  --color-ink-soft: var(--ui-ink-soft);
+  --color-ink-faint: var(--ui-ink-faint);
+  --color-border: var(--ui-border);
+  --color-border-strong: var(--ui-border-strong);
+
+  --color-primary: var(--ui-primary);
+  --color-primary-hover: var(--ui-primary-hover);
+  --color-primary-ink: var(--ui-primary-ink);
+
+  --color-status-healthy: var(--ui-status-healthy);
+  --color-status-healthy-bg: var(--ui-status-healthy-bg);
+  --color-status-attention: var(--ui-status-attention);
+  --color-status-attention-bg: var(--ui-status-attention-bg);
+  --color-status-critical: var(--ui-status-critical);
+  --color-status-critical-bg: var(--ui-status-critical-bg);
+  --color-status-active: var(--ui-status-active);
+  --color-status-active-bg: var(--ui-status-active-bg);
+  --color-insight-ai: var(--ui-insight-ai);
+  --color-insight-ai-bg: var(--ui-insight-ai-bg);
+
+  --font-size-one-number: 2.5rem;
+  --font-weight-one-number: 700;
+}
+
+:root {
+  --ui-bg: #f2f3ef;
+  --ui-surface: #ffffff;
+  --ui-surface-2: #f8f9f6;
+  --ui-ink: #171a17;
+  --ui-ink-soft: #4d534d;
+  --ui-ink-faint: #7d837c;
+  --ui-border: #dde0d8;
+  --ui-border-strong: #c6cabf;
+
+  --ui-primary: #2b5f8a;
+  --ui-primary-hover: #234c70;
+  --ui-primary-ink: #ffffff;
+
+  --ui-status-healthy: #1f7a4d;
+  --ui-status-healthy-bg: #e3f3e9;
+  --ui-status-attention: #9c6b0b;
+  --ui-status-attention-bg: #faf0da;
+  --ui-status-critical: #b3392c;
+  --ui-status-critical-bg: #fae8e5;
+  --ui-status-active: #2d5f9e;
+  --ui-status-active-bg: #e5edf7;
+  --ui-insight-ai: #6b4b9e;
+  --ui-insight-ai-bg: #ede6f5;
+
+  /* Desktop density (owner-web, manager-web, admin-web) — see [data-density="touch"] below */
+  --ui-tap-size: 2.25rem;
+  --ui-density-padding-x: 0.85rem;
+  --ui-density-padding-y: 0.5rem;
+  --ui-density-font-size: 0.9rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ui-bg: #14171a;
+    --ui-surface: #1b1f21;
+    --ui-surface-2: #21262a;
+    --ui-ink: #ecefec;
+    --ui-ink-soft: #a9b0a8;
+    --ui-ink-faint: #7e857d;
+    --ui-border: #2b302e;
+    --ui-border-strong: #3a413d;
+
+    --ui-primary: #6ea3d1;
+    --ui-primary-hover: #8bb6dc;
+    --ui-primary-ink: #0e1720;
+
+    --ui-status-healthy: #5cbb84;
+    --ui-status-healthy-bg: #16261c;
+    --ui-status-attention: #dcae4c;
+    --ui-status-attention-bg: #2a2213;
+    --ui-status-critical: #e57e70;
+    --ui-status-critical-bg: #2c1917;
+    --ui-status-active: #7bacdf;
+    --ui-status-active-bg: #172333;
+    --ui-insight-ai: #b79bdc;
+    --ui-insight-ai-bg: #241c2f;
+  }
+}
+
+:root[data-theme='dark'] {
+  --ui-bg: #14171a;
+  --ui-surface: #1b1f21;
+  --ui-surface-2: #21262a;
+  --ui-ink: #ecefec;
+  --ui-ink-soft: #a9b0a8;
+  --ui-ink-faint: #7e857d;
+  --ui-border: #2b302e;
+  --ui-border-strong: #3a413d;
+  --ui-primary: #6ea3d1;
+  --ui-primary-hover: #8bb6dc;
+  --ui-primary-ink: #0e1720;
+  --ui-status-healthy: #5cbb84;
+  --ui-status-healthy-bg: #16261c;
+  --ui-status-attention: #dcae4c;
+  --ui-status-attention-bg: #2a2213;
+  --ui-status-critical: #e57e70;
+  --ui-status-critical-bg: #2c1917;
+  --ui-status-active: #7bacdf;
+  --ui-status-active-bg: #172333;
+  --ui-insight-ai: #b79bdc;
+  --ui-insight-ai-bg: #241c2f;
+}
+
+:root[data-theme='light'] {
+  --ui-bg: #f2f3ef;
+  --ui-surface: #ffffff;
+  --ui-surface-2: #f8f9f6;
+  --ui-ink: #171a17;
+  --ui-ink-soft: #4d534d;
+  --ui-ink-faint: #7d837c;
+  --ui-border: #dde0d8;
+  --ui-border-strong: #c6cabf;
+  --ui-primary: #2b5f8a;
+  --ui-primary-hover: #234c70;
+  --ui-primary-ink: #ffffff;
+  --ui-status-healthy: #1f7a4d;
+  --ui-status-healthy-bg: #e3f3e9;
+  --ui-status-attention: #9c6b0b;
+  --ui-status-attention-bg: #faf0da;
+  --ui-status-critical: #b3392c;
+  --ui-status-critical-bg: #fae8e5;
+  --ui-status-active: #2d5f9e;
+  --ui-status-active-bg: #e5edf7;
+  --ui-insight-ai: #6b4b9e;
+  --ui-insight-ai-bg: #ede6f5;
+}
+
+/*
+ * Density preset — POS/KDS/mobile surfaces opt in with data-density="touch"
+ * on a root wrapper (see frontend-design-system.md's Design Tokens section:
+ * two presets, not one scale trying to serve both). Desktop apps use the
+ * :root default above.
+ */
+[data-density='touch'] {
+  --ui-tap-size: 2.75rem;
+  --ui-density-padding-x: 1.1rem;
+  --ui-density-padding-y: 0.75rem;
+  --ui-density-font-size: 1rem;
+}
