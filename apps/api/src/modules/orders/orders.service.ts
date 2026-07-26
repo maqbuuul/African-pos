@@ -346,7 +346,13 @@ export class OrdersService {
 
       const fromStatus = order.status as OrderStatus
       let updatedOrder = order
-      if (fromStatus === 'open') {
+      // 'draft' is the QR/customer-ordering channel's initial status (staff
+      // 'pos' orders start 'open') — ORDER_STATUS_TRANSITIONS already allows
+      // draft -> sent_to_kitchen directly, but this only ever handled the
+      // 'open' origin, silently stranding every QR order in 'draft' forever
+      // since item statuses moved to 'sent' above but the order itself never
+      // did.
+      if (fromStatus === 'open' || fromStatus === 'draft') {
         this.assertLegalOrderTransition(fromStatus, 'sent_to_kitchen')
         const [next] = await db.update(orders).set({ status: 'sent_to_kitchen' }).where(eq(orders.id, orderId)).returning()
         if (next) updatedOrder = next

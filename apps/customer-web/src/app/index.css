@@ -1,0 +1,12 @@
+@import '@hospitality-os/ui/tokens.css';
+
+/* Tailwind's v4 auto content-detection skips node_modules by default, so
+ * the workspace-linked design system package needs an explicit @source —
+ * without it, classes used only inside packages/ui components (Button,
+ * ProductGrid, …) never get generated here. */
+@source '../../../../packages/ui/src';
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+}

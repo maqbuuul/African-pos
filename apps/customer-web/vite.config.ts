@@ -1,8 +1,9 @@
+import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   // Reached via QR scan / direct link / WhatsApp message on patchy 3G/4G
   // in-restaurant, disproportionately on cheap Android phones — not
   // organic search. ADR 0001 picked React + Vite over Next.js for this app
