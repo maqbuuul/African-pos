@@ -25,6 +25,17 @@ export class OrganizationController {
     return this.organizationService.getById(req.authContext!, id)
   }
 
+  // No @RequirePermission: this is basic org membership info (which
+  // locations exist), not a sensitive resource — same tier as GET /auth/me,
+  // which every authenticated actor can already read. `organizations:view`
+  // isn't in the seeded permission catalog at all (see
+  // packages/database/src/seed/index.ts), so gating this the same way as
+  // the sibling endpoints above would make it unreachable for every role.
+  @Get(':id/locations')
+  listLocations(@Param('id') id: string, @Req() req: Request) {
+    return this.organizationService.listLocations(req.authContext!, id)
+  }
+
   @Post()
   @HttpCode(201)
   @RequirePermission('organizations:create')

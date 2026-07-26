@@ -151,6 +151,13 @@ const SYSTEM_PERMISSIONS = [
   'loyalty:manage',
   'reports:view_permissions',
   'reports:export',
+  // P14 — Reports/BI Dashboards (apps/api's ReportsController). These two
+  // were referenced by @RequirePermission on dashboards/home, /sales,
+  // /manager, /kitchen, and /staff since the module shipped, but never
+  // added to the catalog — making those routes unreachable for every role,
+  // owner included, since PermissionsGuard fails closed on an ungranted key.
+  'reports:view_sales',
+  'reports:view_staff',
 ] as const
 
 // System-default roles (DATA_MODEL.md "roles"), org-scoped custom roles are
@@ -197,6 +204,10 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
     'shifts:close',
     'shifts:view_pnl',
     'shifts:adjust_cash',
+    // P14 — supervisors can see the same home/sales/manager dashboards a
+    // branch_manager sees; per-staff performance (reports:view_staff) stays
+    // manager-tier.
+    'reports:view_sales',
     // P9 — supervisors can send receipts and view delivery status.
     'receipts:send',
     'receipts:resend',
@@ -238,7 +249,7 @@ const SYSTEM_ROLES: Record<string, readonly (typeof SYSTEM_PERMISSIONS)[number][
   auditor: ['reports:view_profit'],
 }
 
-const seedSystemCatalog = async (db: Db) => {
+export const seedSystemCatalog = async (db: Db) => {
   const permissionIds = new Map<string, string>()
   for (const key of SYSTEM_PERMISSIONS) {
     await db.insert(permissions).values({ key }).onConflictDoNothing({ target: permissions.key })
@@ -667,13 +678,13 @@ const seedDemoRestaurant = async (db: Db, roleIds: Map<string, string>) => {
     .returning()
   if (!location) throw new Error('failed to seed location')
 
-  const ownerPassword = 'DevOwner!2026'
+  const ownerPassword = 'owner123'
   const [owner] = await db
     .insert(users)
     .values({
       organizationId: org.id,
       name: 'Owner',
-      email: 'info@izzibrunchandcake.com',
+      email: 'owner@dev.local',
       passwordHash: await hashSecret(ownerPassword),
       status: 'active',
     })

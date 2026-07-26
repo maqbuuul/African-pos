@@ -106,6 +106,15 @@ export class OrganizationService {
     return row
   }
 
+  async listLocations(authContext: AuthContext, organizationId: string) {
+    return withTenantContext(this.pool, authContext.organizationId, (db) =>
+      db
+        .select()
+        .from(locations)
+        .where(and(eq(locations.organizationId, organizationId), eq(locations.status, 'active'))),
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // db-first — cross-module read helpers (ReceiptsService needs organization
   // and location data to render a receipt). organizations/locations are
