@@ -41,6 +41,7 @@ check before creating a new file.
 | `BUILD_WORKFLOW_HOTEL.md`, `BUILD_WORKFLOW_RETAIL.md` | Hotel OS (`H1`–`H9`) and Retail OS (`R1`–`R7`) build phase order, dependencies, acceptance gates — same format as `BUILD_WORKFLOW.md`, mechanically derived from the PRDs' own Dependencies/Acceptance Criteria sections |
 | `docs/architecture/api-specification.md` | API versioning, auth schemes, request/response conventions, error taxonomy, idempotency, rate limiting, webhook contract |
 | `docs/architecture/frontend-design-system.md` | Component library, design tokens, navigation patterns, responsiveness, accessibility |
+| `docs/frontend-plan.md` | Frontend surfaces: role→app matrix, per-app screen flows, build order — the canonical plan for building every FOH and BOH frontend |
 | `docs/architecture/infrastructure.md` | Deployment topology, environments, CI/CD, secrets, monitoring, backup/DR infrastructure |
 | `docs/architecture/data-platform.md` | Analytics pipeline architecture, event-catalog discipline, feature store considerations, reverse ETL |
 | `docs/architecture/event-catalog.md` | Every domain event across every PRD, indexed with trigger/payload/consumers — derived from the PRDs, not a second source of truth |

@@ -1,198 +1,241 @@
-# Frontend UI/UX Plan — African Hospitality OS
+# Frontend Surfaces — Hospitality OS
 
-## 1. User Types & Their Surfaces
+## Scope
 
-### FRONT OF HOUSE (Customer-Facing)
+Every app a human touches, who it's for, and the exact screen-to-screen
+flow it needs. Backend for the restaurant MVP (P0–P14) is built and
+tested; every app below is what still has to exist before anyone outside
+this codebase can use it. This is the surfaces-and-build-order layer —
+component library, design tokens, navigation patterns, and accessibility
+rules that these apps are built *from* live in
+[docs/architecture/frontend-design-system.md](./architecture/frontend-design-system.md),
+not restated here.
 
-| User | App | Platform | Screens | Design Philosophy |
-|---|---|---|---|---|
-| **Waiter/Server** | `pos-mobile` | React Native, Tablet | PIN Login (big keypad) → Floor Plan (color-coded table grid) → Table Detail (guest count, timer) → Order Entry (category tabs, product grid, modifiers, notes, seat assignment) → Cart Review → Send to Kitchen → Order Status → Bill/Payment (split by item/seat/evenly, M-Pesa, cash, card) → Tips → Receipt | **Clean, minimal, professional.** Big touch targets (44px+). One-handed operation. Table colors: green=available, yellow=seated, red=ordered, blue=eating, gray=cleaning. Big PIN buttons. Fast workflow — fewest taps to common action. |
-| **Cashier** | `pos-mobile` | React Native, Tablet | PIN Login → Counter Mode (product search bar, category grid with thumbnails, cart) → Checkout → Payment (cash calculator with denominations, M-Pesa STK push, card terminal) → Receipt | Same app, different nav. Large thumbnail buttons. Barcode scanner support. |
-| **Host** | `pos-mobile` | React Native, Tablet | Floor Plan (all tables) → Reservations List → Waitlist → Walk-in Seating → Customer Lookup | Read-heavy. Quick seat assignments. |
-| **Customer (QR)** | `customer-web` | React + Vite, Phone-first | QR Scan → Table Session → Menu (categories, products with photos, local names) → Cart → Submit → Order Status (live: received → in kitchen → ready → served) → Request Waiter → Pay (M-Pesa) → Feedback/Rating | Performance budget: <3s to usable, <200ms search. Offline cart. |
-| **Customer (Online)** | `customer-web` | React + Vite, Phone-first | Location/Menu → Cart → Checkout (delivery/pickup) → Tracking → History | Future — same order engine. |
-| **Kiosk Customer** | `kiosk-web` (future) | React + Vite, Touch | Large-format menu → AI upsell → Gamified loyalty → Payment (cash/change, card, M-Pesa) | Deferred per BUILD_WORKFLOW. |
+## 1. Role → Surface Matrix
 
-### BACK OF HOUSE
+One row per person who will open one of these apps. Decided after
+checking how Toast, Square, Lightspeed, Clover, and Odoo actually split
+their platforms — see §3 for the research-backed decisions.
 
-| User | App | Platform | Screens | Design Notes |
-|---|---|---|---|---|
-| **Chef/Kitchen Staff** | `kds-web` | React + Vite, Tablet (landscape) | Station Queue (ticket cards, progress bars, timers, allergy badges, rush/VIP flags) → Ticket Detail (modifiers, notes, plating photos, seat/course) → Item Actions (Accept, Start, Bump, Recall, Ack Void) → Expo View (multi-station per order) → 86 Item | **Already built** (971 lines, monolithic). Wet-hands friendly. Large touch targets. Needs component extraction. |
-| **Bar Staff** | `kds-web` | React + Vite, Tablet | Bar Station Queue → Pour Cost (poured vs theoretical) → Drink Recipe Display → Tab Management → Batch Close Tabs | Same KDS, bar-specific tabs. |
-| **Expediter** | `kds-web` | React + Vite, Large Screen | Expo View (all stations/orders) → Rush/VIP alerts → Cross-station delay alerts → Bump whole order | Large display at the pass. |
-
-### MANAGEMENT
-
-| User | App | Platform | Screens | Notes |
-|---|---|---|---|---|
-| **Branch Manager** | `manager-web` | React + Vite, Desktop | Dashboard (live revenue, open orders, staff on duty, kitchen delays, stock alerts) → Approvals Queue (voids, discounts, refunds, adjustments → approve/reject with reason) → Shift Management (open/close, live P&L, denom count, reconciliation) → Staff (attendance, clock-in/out, deactivate) → Inventory (stock, POs, counts, adjustments, wastage) → Reports (sales, payments, voids, discounts, shifts) → Audit Log (search, filter, export) | **Shell only (53 lines).** Backend 100% ready. |
-| **Supervisor** | `manager-web` | React + Vite, Desktop | Live service view, queue status, minor discount approvals, escalation. | Subset of manager screens. |
-| **Stock Controller** | `manager-web` | React + Vite, Desktop | Inventory dashboard, stock levels, POs, goods receiving, counts, transfers, suppliers. | Subset of manager inventory. |
-| **Accountant** | `manager-web` | React + Vite, Desktop | Revenue reports, payment reconciliation, tax summary, P&L, cash flow, expenses. | Subset of manager reports. |
-| **Auditor** | `manager-web` | React + Vite, Desktop | Audit log search/export, permission changes, voids/discounts by staff, cash variances, login activity, suspicious flags. | Read-only. |
-
-### EXECUTIVE
-
-| User | App | Platform | Screens | Notes |
-|---|---|---|---|---|
-| **Owner** | `owner-web` | React + Vite, Desktop | Executive Dashboard (live revenue, profit, alerts, forecasts, recommendations, One Number) → Branch Comparison (side-by-side, peer benchmark) → P&L (daily/monthly, gross margin, COGS) → Customer Intelligence (retention, LTV, churn, top customers) → Forecasts (revenue, demand trends) → AI Briefings (daily report, anomalies, recommendations) → Billing (subscription, usage) → Settings (permissions, roles, integrations) | **Shell only (53 lines).** Reports + CRM backends complete. |
-| **Regional Manager** | `owner-web` | React + Vite, Desktop | Multi-branch ranking, exceptions dashboard, inter-branch stock transfer, manager review. | Subset + branching views. |
-
-### ADMIN / SUPPORT
-
-| User | App | Platform | Screens | Notes |
-|---|---|---|---|---|
-| **Support Agent** | `admin-web` | React + Vite, Desktop | Tenant list/search → Tenant detail (org, location, users, devices, subscription) → Device Status → Sync Health → Integration Logs → Feature Flags → Manual Retry for failed jobs → eTIMS submission status | **64-line shell.** Hardcoded stats. |
-
-### DEFERRED (P19+)
-
-| App | User | Notes |
-|---|---|---|
-| `desktop-pos` (Tauri) | Cashier (PC-based) | Deferred until mobile POS stabilizes. |
-| `developer-portal` (React + Vite) | Third-party developers | P19 phase: app registration, API docs, OAuth, webhooks, marketplace. |
-| `marketing-web` (Astro) | Public visitors | Marketing site, docs, pricing. Currently 2 placeholder pages. |
-
----
-
-## 2. Design System — `packages/ui`
-
-Every component needed, organized by priority. Built on **shadcn/ui + Tailwind CSS**.
-
-### Critical (block frontend builds)
-
-| Component | Used By | Description |
-|---|---|---|
-| `PINPad` | pos-mobile, kds-web, manager-web | Large-button numeric keypad, 6-digit PIN entry, big backspace, big enter. Clean, centered. |
-| `ProductGrid` | pos-mobile, customer-web | Touch-friendly item grid with category tabs, images, prices, availability badges. |
-| `FloorPlan` | pos-mobile, manager-web | Interactive table layout — drag/pan, tap table, color-coded status, table labels. |
-| `TableCard` | pos-mobile, manager-web | Single table indicator: shape, number, status color, guest count, timer, waiter name. |
-| `TicketCard` | kds-web | KDS ticket: item list, progress bar, timer, allergy badges, rush/VIP flag, station color. |
-| `MetricTile` | manager-web, owner-web, admin-web | KPI display: label, value, trend arrow, sparkline, color semantic. One Number Principle. |
-| `ApprovalQueue` | manager-web | Pending approval list: action type, requester, amount, timestamp, approve/reject buttons with reason input. |
-| `Skeleton` | All apps | Loading placeholder — shimmer animation per component shape. |
-| `ConnectivityIndicator` | All apps | 3-state banner: Online (hidden/green dot), Syncing (amber, spinner), Offline (red, "X min remaining"). |
-
-### High Priority
-
-| Component | Used By |
-|---|---|
-| `DataTable` (sort, filter, paginate, export) | manager-web, owner-web, admin-web |
-| `ShiftDrawer` (cash denomination count) | pos-mobile, manager-web |
-| `PaymentSplit` (by item / by seat / evenly UI) | pos-mobile |
-| `CartReview` (order summary with edit, notes, seat labels) | pos-mobile, customer-web |
-| `ConfirmDialog` (destructive action with reason textarea) | All apps |
-| `StatusBadge` (color + label for all entity states) | All apps |
-| `EmptyState` (contextual "no data" with next-action prompt) | All apps |
-| `SearchBar` (with debounce, results dropdown) | pos-mobile, manager-web, customer-web |
-| `MenuCategoryTabs` (horizontal scrollable category row) | pos-mobile, customer-web |
-
-### Medium Priority
-
-| Component | Used By |
-|---|---|
-| `NavigationSidebar` | manager-web, owner-web, admin-web |
-| `ActionButton` (primary/secondary/danger with icon) | All apps |
-| `Toast` (success/error/info notifications) | All apps |
-| `Modal` (overlay dialog) | All apps |
-| `DateRangePicker` | manager-web, owner-web, admin-web |
-| `FileUpload` (product photos, invoice photos) | manager-web |
-| `CustomerCard` (profile summary with loyalty, credit, history) | manager-web, pos-mobile |
-| `KDSExpoView` (multi-station per order, combined readiness) | kds-web |
-| `NoteBadge` (allergy, kitchen note on tickets) | kds-web |
-
----
-
-## 3. Design Tokens
-
-### Color — Fixed Semantics (never decorative)
-
-| Token | Usage | Hex |
-|---|---|---|
-| `color.status.healthy` | Online, synced, paid, available | Green |
-| `color.status.needsAttention` | Low stock, pending approval, syncing, bill requested | Amber |
-| `color.status.critical` | Offline, stockout, voided, refunded, error | Red |
-| `color.status.active` | In progress, seated, ordered | Blue |
-| `color.insight.ai` | AI recommendation, forecast | Purple |
-| `color.neutral` | Backgrounds, text, borders | Gray scale |
-
-### Density Presets
-
-- **POS/KDS (touch-first):** Larger spacing, 44px+ minimum touch targets, larger font for key numbers
-- **Desktop (mouse/keyboard):** Standard density, more information per view
-
-### Typography
-
-- One reserved size for the "One Number" — the single most important metric on any dashboard
-- POS/KDS: larger base font for readability at arm's length
-
----
-
-## 4. Navigation Architecture
-
-### Per-App Navigation
-
-| App | Navigation Pattern | Home Screen |
-|---|---|---|
-| `pos-mobile` | Tab bar (Floor, Orders, Pay, More) + Modal (order entry) | Floor Plan (waiter) or Product Grid (cashier) |
-| `customer-web` | Single page, scroll-based sections | Menu by category |
-| `kds-web` | Tab bar (Station, Expo, Analytics, Print) | Station queue |
-| `manager-web` | Sidebar navigation | Daily operations dashboard |
-| `owner-web` | Sidebar navigation | Executive dashboard |
-| `admin-web` | Sidebar navigation | Tenant list |
-
-### Rules
-
-- **One tap to most common action per role** — home screen is *that role's* primary action, not a generic dashboard
-- **Progressive disclosure** — rare/advanced actions one level deeper (e.g., void served item is on order detail, not the primary grid)
-- **Location switcher** — identical component across every app that needs it (shared `packages/ui` component)
-
----
-
-## 5. Responsiveness Targets
-
-| App | Primary | Secondary |
-|---|---|---|
-| `pos-mobile` | Phone + Tablet (RN) | — |
-| `kds-web` | Tablet landscape | Desktop |
-| `manager-web` | Desktop | Tablet |
-| `owner-web` | Desktop | Tablet |
-| `admin-web` | Desktop | Tablet |
-| `customer-web` | Phone portrait | Tablet |
-| `marketing-web` | Desktop + Phone | — |
-
----
-
-## 6. Error & Empty States Rules
-
-- **Error messages describe the fix, not the failure.** Never "Error 422" — always "That phone number doesn't look right — check the digits and try again."
-- **Empty states name the next action.** Never bare "No data" — always "No orders yet — orders will appear here once you start selling."
-- **Color is never the only signal.** Every status indicator also carries a label or icon (color-blind safe, legible in bright kitchen light).
-
----
-
-## 7. Build Order
-
-| Order | Stream | Description | Dependencies |
+| Role | App | Platform | Status |
 |---|---|---|---|
-| **1** | Foundation | `packages/ui` design system (tokens, core components: Button, Input, Card, Modal, Skeleton, ConnectivityIndicator, StatusBadge, EmptyState) | None |
-| **2** | Foundation | `packages/api-client` typed fetch wrapper (auth injection, envelope parsing, error types) | None |
-| **3** | FOH | `pos-mobile` waiter POS: PINPad, FloorPlan, ProductGrid, CartReview, Payment, Tips, Receipt | 1, 2 |
-| **4** | Management | `manager-web`: Dashboard, Approvals, Shifts, Staff, Inventory, Reports, Audit | 1, 2 |
-| **5** | Executive | `owner-web`: Executive Dashboard, Branch Comparison, P&L, Customer Intelligence | 1, 2 |
-| **6** | Refactor | `customer-web`: component extraction, routing, state management | 1, 2 |
-| **7** | Refactor | `kds-web`: component extraction, Zustand integration | 1 |
-| **8** | Admin | `admin-web`: Tenant management, device/sync health dashboard | 1, 2 |
-| **9** | Marketing | `marketing-web`: real content pages (can run in parallel with 3-8) | None |
+| Waiter | `pos-mobile` | React Native · phone/tablet | No UI |
+| Cashier | `pos-mobile` | React Native · phone/tablet | No UI |
+| Host | `pos-mobile` | React Native · phone/tablet | No UI |
+| Waiter · Cashier · Host (browser mirror) | ~~`pos-web`~~ | React + Vite · browser | Rejected |
+| Manager (on the go) | `insights-mobile` *(proposed)* | React Native · phone | Recommended |
+| Owner (on the go) | `insights-mobile` *(proposed)* | React Native · phone | Recommended |
+| Chef · Bar · Expediter | `kds-web` | React + Vite · tablet landscape | Monolith |
+| Branch Manager · Supervisor · Stock Controller · Accountant · Auditor | `manager-web` | React + Vite · desktop | Shell |
+| Owner · Regional Manager | `owner-web` | React + Vite · desktop | Shell |
+| Support Agent (platform team) | `admin-web` | React + Vite · desktop | Shell |
+| Dine-in / online customer | `customer-web` | React + Vite · phone | Monolith |
+| Public visitor | `marketing-web` | Astro · desktop/phone | Placeholder |
+| Third-party developer | `developer-portal` | React + Vite | Deferred · P19 |
+| Cashier (PC counter) | `desktop-pos` | Tauri | Deferred |
+
+**Status key:** *No UI* — zero screens built. *Shell* — nav skeleton only,
+placeholder buttons. *Monolith* — functional but one giant file, needs
+component extraction. *Placeholder* — content-only stub. *Deferred* —
+intentionally not started, later phase. *Rejected* — considered and
+ruled out. *Recommended* — not yet started, proposed addition.
+
+## 2. Foundation — must exist first
+
+Every app in §4 is built out of these two packages. Neither has a single
+component yet.
+
+**`packages/ui`** — shadcn/ui + Tailwind. Zero components today. Critical
+tier — the pieces every other app is waiting on: `PINPad`, `FloorPlan`,
+`ProductGrid`, `TicketCard`, `MetricTile`, `ApprovalQueue`, `Skeleton`,
+`ConnectivityIndicator`, `StatusBadge`. Rules: 44px+ touch targets, color
++ label never color alone, role-agnostic primitives. Full component/token
+spec lives in
+[frontend-design-system.md](./architecture/frontend-design-system.md).
+
+**`packages/api-client`** — typed fetch wrapper. Zero generated clients
+today — every app currently would hand-write untyped fetch calls with no
+auth-header injection and no shared error handling. Needs: auth
+injection, envelope parsing, typed error taxonomy (per
+[api-specification.md](./architecture/api-specification.md)).
+
+## 3. Decided, after checking how Toast / Square / Lightspeed / Clover / Odoo do it
+
+### Rejected — `pos-web` as a full mirror of `pos-mobile`
+
+Checked five platforms. Toast, Square, Lightspeed, and Clover each pick
+**one** surface for order-taking — always native, always where offline
+mode and hardware (printer, card reader, barcode scanner) live. Nobody
+runs the same frontline workflow as two parallel apps. Odoo is the one
+full exception, and it goes the *other* way entirely — no native app at
+all, the whole POS is a browser PWA, hardware reached through a network
+proxy box instead of native OS calls. Nobody splits the difference the
+way `pos-web` did.
+
+**`pos-mobile` stays the one frontline surface** for Waiter, Cashier, and
+Host — matches all four leaders, and matches ADR-0001's own reasoning for
+choosing React Native bare in the first place (native modules for POS
+peripherals). A parallel browser mirror means two codebases forever for
+one job, for a use case (no-install backup terminal) none of the five
+platforms researched thought was worth it.
+
+### Recommended — `insights-mobile`, a companion phone app for Manager + Owner
+
+The pattern that **did** repeat, independently, across all four leaders:
+a lightweight phone app, separate from the web dashboard, for checking on
+the business away from a desk — Toast Now, the Square Dashboard app,
+Lightspeed Live, Clover Go. `manager-web` and `owner-web` currently have
+no mobile companion at all. That's the real, evidence-backed gap.
+
+Read-mostly, one shared app for both roles (scoped by permission, same as
+the web apps): today's revenue, the approvals queue, staff on duty,
+low-stock alerts. Not a shrunk-down `manager-web` — a glance, not a
+workstation.
+
+## 4. Every app, in detail
+
+### `pos-mobile` — No UI
+
+- **Roles:** Waiter · Cashier · Host
+- **Platform:** React Native, phone/tablet
+- **Flow:** PIN login → Floor plan → Table detail → Order entry → Cart
+  review → Send to kitchen → Bill/payment → Tips → Receipt
+- Cashier mode swaps the floor plan for a product-grid counter view; host
+  mode swaps order entry for reservations/waitlist/seating. Same shell,
+  different nav — **this is the #1 gap**: the API is fully built and this
+  app still only shows sync status.
+
+### ~~`pos-web`~~ — Rejected
+
+Would have mirrored `pos-mobile`'s Waiter/Cashier/Host flow in a browser.
+Rejected after research — see §3.
+
+### `insights-mobile` *(proposed)* — Recommended
+
+- **Roles:** Manager · Owner (on the go)
+- **Platform:** React Native, phone
+- **Flow:** PIN/login → Today's revenue → Approvals queue → Staff on duty
+  → Low-stock alerts → Push notification → detail
+- Read-mostly companion to `manager-web`/`owner-web`, not a shrunk-down
+  clone of either — matches Toast Now, the Square Dashboard app,
+  Lightspeed Live, and Clover Go, which all exist as separate, lightweight
+  "check on the business" apps rather than a responsive version of the
+  full back office.
+
+### `kds-web` — Monolith
+
+- **Roles:** Chef · Bar staff · Expediter
+- **Platform:** React + Vite, tablet landscape
+- **Flow:** Station queue → Ticket detail → Accept/start/bump →
+  Recall/ack void → Expo view
+- Already functional (971 lines, one file). Needs component extraction
+  into `packages/ui`, not new screens. Wet-hands-friendly: large targets,
+  allergy/rush badges carry a label, not just a color.
+
+### `manager-web` — Shell
+
+- **Roles:** Manager · Supervisor · Stock · Accounts · Audit
+- **Platform:** React + Vite, desktop
+- **Flow:** Dashboard → Approvals queue → Shift mgmt → Staff → Inventory
+  → Reports → Audit log
+- 53 lines, `alert()` buttons today. Backend 100% ready. Home screen is
+  the live ops dashboard, not a generic landing page — approvals sit one
+  click away since they're the most time-sensitive queue in the building.
+
+### `owner-web` — Shell
+
+- **Roles:** Owner · Regional Manager
+- **Platform:** React + Vite, desktop
+- **Flow:** Exec dashboard → Branch comparison → P&L → Customer intel →
+  Forecasts → AI briefings → Billing
+- 53 lines, dead links. Reports + CRM backends are done. One reserved
+  type size for the single figure that matters most on any given screen
+  — the "One Number" — so a glance answers the question.
+
+### `admin-web` — Shell
+
+- **Roles:** Support Agent (platform team)
+- **Platform:** React + Vite, desktop
+- **Flow:** Tenant list → Tenant detail → Device status → Sync health →
+  Integration logs → Feature flags
+- 64 lines, hardcoded stats. This is also the natural home for the
+  org/business module-entitlement toggles from the multi-tenant
+  discussion, once that layer exists.
+
+### `customer-web` — Monolith
+
+- **Roles:** Dine-in (QR) · online customer
+- **Platform:** React + Vite, phone portrait
+- **Flow:** QR scan → Menu → Cart → Submit → Live status → Request waiter
+  → Pay → Feedback
+- 797 lines, one file, no routing despite react-router being installed.
+  Hardest performance budget in the whole system — under 3s to usable,
+  under 200ms search — opened on a stranger's phone over patchy 3G with
+  zero patience.
+
+### `marketing-web` — Placeholder
+
+- **Roles:** Public visitor · prospect
+- **Platform:** Astro, desktop + phone
+- Two placeholder pages. Not a workflow surface — content only. The one
+  place in the system SSR actually earns its keep, since it's the one
+  surface search engines need to crawl.
+
+### `developer-portal` — Deferred · P19
+
+- **Roles:** Third-party developer
+- **Platform:** React + Vite
+- App registration, API docs, OAuth, webhooks, marketplace listing.
+  Correctly last — nobody integrates against this API before real
+  restaurants are running on it.
+
+### `desktop-pos` — Deferred
+
+- **Roles:** Cashier (PC counter)
+- **Platform:** Tauri
+- Mirrors `pos-mobile`'s counter flow for a PC-based till. Revisit once
+  the mobile counter mode is proven in a real restaurant, not before.
+
+## 5. Build order
+
+Dependency order, not priority order — everything under Foundation
+blocks everything below it.
+
+| # | Stream | Build | Depends on |
+|---|---|---|---|
+| 1 | Foundation | `packages/ui` | — |
+| 2 | Foundation | `packages/api-client` | — |
+| 3 | FOH | `pos-mobile` | 1, 2 |
+| 4 | Management | `manager-web` | 1, 2 |
+| 5 | Executive | `owner-web` | 1, 2 |
+| 5b | Executive | `insights-mobile` *(recommended)* | 1, 2, 4, 5 data |
+| 6 | Refactor | `customer-web` | 1, 2 |
+| 7 | Refactor | `kds-web` | 1 |
+| 8 | Admin | `admin-web` | 1, 2 |
+| 9 | Marketing | `marketing-web` | — (parallel-safe) |
+
+## 6. Workflow-efficiency rules — apply to all of the above
+
+Not waiter-specific — every app above is held to the same rules.
+
+- **One tap to the most common action, per role.** Each app's home screen
+  *is* that role's most common action — not a generic dashboard everyone
+  has to navigate away from.
+- **Progressive disclosure.** Rare or destructive actions sit one level
+  deeper than common ones — voiding a served item lives on order detail,
+  not on the primary order-entry grid.
+- **Color is never the only signal.** Every status color also carries a
+  label or icon — legible in bright kitchen light, usable by color-blind
+  staff.
+- **44px+ touch targets** on every POS/KDS/mobile surface — frontline
+  usability and accessibility align here, not a tradeoff.
+- **Errors describe the fix, never the failure.** Never "Error 422" —
+  "That phone number doesn't look right — check the digits and try
+  again."
+- **Empty states name the next action.** Never bare "No data" — "No
+  orders yet — orders will appear here once you start selling."
 
 ---
 
-## 8. Performance Budgets (from frontend-design-system.md)
-
-| Metric | Target |
-|---|---|
-| App launch to usable | <3s |
-| Item search | <200ms |
-| Add item to cart | <100ms |
-| Payment screen ready | <500ms |
-| Receipt generation | <1s |
-| Full resync after 1hr offline | <10s |
+*pos-web rejected, insights-mobile recommended — decided against
+Toast/Square/Lightspeed/Clover/Odoo research (§3).*

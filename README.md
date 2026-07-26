@@ -47,6 +47,9 @@ Supporting development docs:
   confidence than Restaurant OS since neither vertical has been built
   yet (see `docs/prd/README.md`). Start at
   [docs/prd/README.md](./docs/prd/README.md) for the index and template.
+- [docs/frontend-plan.md](./docs/frontend-plan.md) — the canonical
+  frontend build plan: role→app surface matrix, per-app screen flows, and
+  build order for every FOH and BOH frontend
 - [docs/architecture/](./docs/architecture/) — cross-cutting technical
   volumes: [api-specification.md](./docs/architecture/api-specification.md),
   [frontend-design-system.md](./docs/architecture/frontend-design-system.md),
